@@ -3,7 +3,10 @@ export const GAME = {
   maxFrameDelta: 0.1,
   player: {
     maxHp: 100,
-    speed: 1.55,
+    speed: 2.2,
+    startSquad: 4,
+    squadMax: 12,
+    startWeaponLevel: 1,
     dashSpeed: 5.8,
     dashDuration: 0.16,
     dashCooldown: 2.8,
@@ -22,21 +25,28 @@ export const GAME = {
     maxParticles: 260,
     barrelMaxActive: 3,
     barrelMaxAlignment: 0.38,
+    zombieLaneSwitchChance: 0.3,
+    zombieLaneSwitchIntervalMin: 1.1,
+    zombieLaneSwitchIntervalMax: 2.1,
   },
   barrel: {
     baseHp: 72,
     hpPerWave: 14,
     blastRadiusX: 0.55,
     blastRadiusZ: 3.8,
+    stopGap: 0.9,
     blastDamage: 38,
     blastDamagePerWave: 6,
-    heal: 18,
-    overdriveDuration: 5,
-    scoreBonus: 500,
+    multiplierMin: 2,
+    multiplierMax: 5,
+    multiplierDuration: 9,
+    gateSoldierMin: 1,
+    gateSoldierMax: 3,
+    gatePenaltyMax: 2,
   },
   contact: {
     grabDuration: 0.85,
-    grabDepth: 2.35,
+    grabDepth: 1.9,
     grabDamageMultiplier: 1.5,
     grabMoveSlow: 0.55,
     breakKnockbackDepth: 5.4,
@@ -72,3 +82,6 @@ export const COLORS = {
 export type GameStatus = 'ready' | 'playing' | 'paused' | 'overrun' | 'gameover'
 
 export type ZombieVariant = 0 | 1 | 2 | 3
+
+export const LANE_X = [-0.62, 0, 0.62] as const
+export type LaneIndex = 0 | 1 | 2

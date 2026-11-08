@@ -1,24 +1,22 @@
 # DEADLANE
 
-A mobile-first browser zombie horde shooter. Hold a bridge lane, auto-fire into a growing crowd, line up on supply caches, dash out of grabs, and chase a higher score every run.
+A portrait, 3D single-hero lane zombie shooter. Hold one of three bridge lanes, auto-fire into a growing crowd, shoot gates to upgrade your gun, switch lanes to manage the horde, and chase a higher score every run.
 
-> One lane. Zero mercy.
+> Three lanes. Zero mercy.
 
 ![DEADLANE start screen](docs/preview-start.png)
 ![DEADLANE gameplay](docs/preview-gameplay.png)
 
 ## Framework choice
 
-**React 19 + TypeScript + Vite for the UI shell, with a purpose-built Canvas 2D game engine.**
+**React 19 + TypeScript + Vite for the UI shell, with Three.js for the high-end 3D renderer.**
 
 Why this stack for this game:
 
-- The game is a 2.5D lane shooter, not a 3D open world. A custom Canvas renderer gives full control over perspective, draw order, procedural sprites, and horde density without a 3D model/animation pipeline.
+- The mockups call for a 3D bridge, city depth, squad, giant zombie boss, and cinematic bullet streams. Three.js gives that presentation while keeping the simulation framework-agnostic.
 - The simulation is plain TypeScript and has no React dependency. React only renders screens, HUD, and overlays. This keeps the game loop out of component state and avoids the usual React game-loop spaghetti.
-- Canvas 2D comfortably renders the current horde with pre-rendered procedural sprites. If the art direction later moves to real 3D, `Renderer` is the only layer that needs replacing; `GameWorld` and the UI contract stay intact.
-- Vite keeps the dev/build loop tiny. The current production build is about **93 KB gzipped for JS + CSS**, plus ~89 KB of self-hosted font files.
-
-If the project later needs large 3D scenes, character animation, and a content-heavy asset pipeline, the recommended upgrade path is **Three.js / React Three Fiber for rendering**, while keeping the fixed-step simulation and snapshot-based UI boundary. Do not rewrite the game logic into React components.
+- `Renderer` is isolated behind `GameEngine` and the `GameWorld` snapshot contract, so the 3D presentation can be improved without rewriting simulation logic.
+- Vite keeps the dev/build loop tiny. The current production build is about **224 KB gzipped for JS + CSS**, plus ~89 KB of self-hosted font files. Code-splitting Three.js remains a future optimization.
 
 ## Run it
 
@@ -41,31 +39,34 @@ npm run preview
 
 | Action | Desktop | Touch |
 | --- | --- | --- |
-| Move | `A` / `D` or arrow keys | Drag anywhere on the lane |
-| Aim / fire | Automatic | Automatic |
+| Switch lane | `A` / `D` or arrow keys | Drag into the left/center/right lane |
+| Aim / fire | Automatic down the current lane | Automatic down the current lane |
 | Dash | `Space` or dash button | Dash button |
 | Pause | `P` / `Escape` | Pause button |
 | Start / restart | `Enter` or button | Button |
 
 Dash gives brief invulnerability. Keep a streak alive to raise the score multiplier. A wave clear patches up some health and pays a bonus.
 
-Auto-fire normally prioritizes the closest zombie. If you line up with a supply cache, the cache can become the target instead. Caches explode for area damage and drop a color-coded reward: **lime = medkit**, **cyan = overdrive**, **gold = score**. When a zombie reaches you it grabs; dash to break free before your health drains. At 0 HP the player is swarmed, then the run ends.
+Auto-fire only shoots down the squad's current lane. The closest zombie in that lane is the target, unless a gate is in front of it; a gate blocks shots only in its own lane. Zombies stop behind intact gates until the gate is destroyed. Gates are the main choice: shoot a gate to grow your squad, upgrade your gun, heal, or raise your bullet multiplier. Most zombies are lane-locked; the red-shirt zombies are the subset that can switch lanes toward you. Zombies that cross the red HOME LINE breach and subtract life. At 0 HP the player is swarmed, then the run ends.
 
 ## What is in the current build
 
 - Start, pause, overrun, game-over, and restart flow
 - Local best-score and sound-preference persistence
 - Fixed-timestep simulation, independent of frame rate
-- Keyboard and pointer/touch movement
-- Auto-targeting with tracers, critical hits, hit flashes, and target reticle
-- Dash with cooldown, afterimages, and invulnerability frames
+- Three-lane movement with keyboard lane steps and pointer/touch lane selection
+- Same-lane auto-targeting with tracers, critical hits, hit flashes, and target reticle
+- Animated projectile bullets with bullet multipliers
 - Combo multiplier and floating score feedback
 - Endless escalating waves with close-range vanguard spawns
-- Destructible supply caches with readable HP labels, color-coded rewards, blast damage, and score
-- Contact grabs: zombies lunge, slow the player, and drain health; dash breaks grabs
+- Shooter gates with squad, gun, heal, penalty, and bullet-multiplier choices
+- Large 3D gates with readable labels, lane-blocking shots, same-lane blast damage, and score
+- Zombies stop behind intact gates instead of walking through them
+- Squad size and gun level persist through the run
+- Lane-locked zombies; red-shirt zombies can switch lanes toward the player
+- Zombie breaches: zombies reaching the home line crash through and subtract life
 - Overrun sequence and result screen when the player is reached at 0 HP
-- Overdrive fire-rate buff with HUD timer
-- Procedural player, zombie, and barrel sprites; bridge/ocean scene; particles; screen shake; hurt vignette; low-health warning
+- Three.js bridge/city scene, particles, bullet streams, screen shake, and hurt effects
 - Procedural WebAudio sound effects (no audio assets required)
 - Responsive portrait, desktop, and landscape layouts
 
@@ -78,9 +79,9 @@ src/
   game/
     GameEngine.ts       Loop, fixed timestep, snapshots, audio/input wiring
     GameWorld.ts        Pure simulation: player, zombies, caches, contact, waves, effects
-    Renderer.ts         Canvas scene, perspective projection, sprites, barrel labels, FX
-    SpriteBank.ts       Procedurally rendered sprite atlases
-    InputController.ts  Keyboard + pointer input normalization
+    Renderer.ts         Three.js bridge/city scene, gates, squad, zombies, FX
+    SpriteBank.ts       Legacy procedural sprite utilities
+    InputController.ts  Keyboard + pointer lane selection
     AudioEngine.ts      Tiny WebAudio synthesizer
     config.ts           All balance and tuning constants
     types.ts            Shared simulation/UI contracts
@@ -110,8 +111,8 @@ React never mutates the simulation. It only calls engine commands (`start`, `tog
 
 Most feel changes live in `src/game/config.ts`:
 
-- Player damage, fire rate, dash, crit chance, overdrive fire-rate multiplier
-- Zombie count/HP/speed/spawn interval scaling
+- Player damage, fire rate, lane-switch speed, bullet multiplier duration, dash, crit chance, overdrive fire-rate multiplier
+- Zombie count/HP/speed/spawn interval scaling and lane-switch interval
 - Wave break length and heal amount
 - Spawn depth, attack depth, grab duration/depth, and grab slow
 - Cache HP, blast radius/damage, rewards, and alignment window
@@ -121,9 +122,11 @@ The vanguard spawn logic and cache placement are in `GameWorld.beginWave()`. The
 ## Design notes
 
 - **The horde is the spectacle.** Close-range vanguard spawns were added specifically so waves do not become a shooting gallery at the horizon.
-- **Auto-fire needs movement to stay interesting.** The player's job is lane positioning, dash timing, and streak preservation. Caches only enter the auto-fire target pool when the player is roughly in their lane, so lining up is the deliberate input.
-- **Caches are a risk/reward target.** Shooting one spends time and diverts fire from the horde, but the blast and reward can flip a wave. Reward color is shown in the cache HP label so the choice is readable before committing.
-- **Contact must be readable.** Zombies do not just chip health from a distance; they lunge, grab, and visibly cling to the player. The dash is both a repositioning tool and the escape button. At 0 HP the player is swarmed, then the run ends.
+- **Three lanes, not free movement.** The player's job is lane positioning, dash timing, and streak preservation. Shooting, cache blocking, and grabs are all resolved in the current lane, so the road guide, dividers, chevrons, and L/C/R markers are part of the readability system.
+- **Choose the lane with the best multiplier.** The visible cache number tells you what your next shots are worth. A stronger multiplier may be worth diverting fire from the immediate horde.
+- **Only some zombies chase your lane.** Most zombies stay lane-locked. Red-shirt zombies can step sideways toward the player's lane, which makes lane switches dangerous without turning every zombie into a homing enemy.
+- **Caches physically block their lane.** Zombies stop behind intact caches, so the cache reads as a barrier between the player and the horde. Destroying it spends time and diverts fire, but the blast and bullet multiplier can flip the lane.
+- **Contact must be readable.** Zombies do not just chip health from a distance; they lunge closer, glow red, claw the player, and show a floating `GRABBED` warning. The dash or a lane switch is the escape. At 0 HP the player is swarmed, then the run ends.
 - **No asset dependency.** Sprites are drawn once into offscreen canvases; the renderer only scales and composites them. This keeps placeholder art consistent and fast.
 
 ## Quality checks used
@@ -131,4 +134,4 @@ The vanguard spawn logic and cache placement are in `GameWorld.beginWave()`. The
 - `npm run typecheck`
 - `npm run build`
 - Headless mobile (390×844), desktop, and landscape (844×390) visual passes
-- Start, pause, resume, keyboard pause, dash, grab break, cache destruction, overdrive pickup, wave clear, best-score persistence, overrun, and game-over/restart flow exercised in-browser
+- Start, pause, resume, keyboard pause, lane switching, projectile hits, gate blocking, gate destruction, bullet multiplier pickup, zombie breach, wave clear, best-score persistence, overrun, and game-over/restart flow exercised in-browser

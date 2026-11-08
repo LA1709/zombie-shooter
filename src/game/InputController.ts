@@ -1,16 +1,13 @@
+import type { LaneIndex } from './config'
 import type { Controls } from './types'
 import { clamp } from './math'
-
-const ROAD_SCREEN_HALF = 0.44
 
 export class InputController {
   private readonly canvas: HTMLCanvasElement
   private readonly onPause: () => void
-  private left = false
-  private right = false
-  private dashQueued = false
+  private laneShiftQueued = 0
   private pointerActive = false
-  private pointerTarget: number | null = null
+  private pointerLane: LaneIndex | null = null
 
   constructor(canvas: HTMLCanvasElement, onPause: () => void) {
     this.canvas = canvas
@@ -39,22 +36,17 @@ export class InputController {
 
   consumeControls(): Controls {
     const controls: Controls = {
-      moveAxis: Number(this.right) - Number(this.left),
-      pointerX: this.pointerActive ? this.pointerTarget : null,
-      dashPressed: this.dashQueued,
+      laneShift: this.laneShiftQueued,
+      targetLane: this.pointerActive ? this.pointerLane : null,
     }
-    this.dashQueued = false
+    this.laneShiftQueued = 0
     return controls
   }
 
-  queueDash(): void {
-    this.dashQueued = true
-  }
-
   clearTransient(): void {
-    this.dashQueued = false
+    this.laneShiftQueued = 0
     this.pointerActive = false
-    this.pointerTarget = null
+    this.pointerLane = null
   }
 
   private handleKeyDown = (event: KeyboardEvent): void => {
@@ -63,16 +55,12 @@ export class InputController {
     switch (event.code) {
       case 'KeyA':
       case 'ArrowLeft':
-        this.left = true
+        if (!event.repeat) this.queueLaneShift(-1)
         event.preventDefault()
         break
       case 'KeyD':
       case 'ArrowRight':
-        this.right = true
-        event.preventDefault()
-        break
-      case 'Space':
-        if (!event.repeat) this.dashQueued = true
+        if (!event.repeat) this.queueLaneShift(1)
         event.preventDefault()
         break
       case 'KeyP':
@@ -85,26 +73,16 @@ export class InputController {
     }
   }
 
-  private handleKeyUp = (event: KeyboardEvent): void => {
-    switch (event.code) {
-      case 'KeyA':
-      case 'ArrowLeft':
-        this.left = false
-        break
-      case 'KeyD':
-      case 'ArrowRight':
-        this.right = false
-        break
-      default:
-        break
-    }
-  }
+  private handleKeyUp = (_event: KeyboardEvent): void => {}
 
   private handleBlur = (): void => {
-    this.left = false
-    this.right = false
+    this.laneShiftQueued = 0
     this.pointerActive = false
-    this.pointerTarget = null
+    this.pointerLane = null
+  }
+
+  private queueLaneShift(direction: number): void {
+    this.laneShiftQueued = clamp(this.laneShiftQueued + direction, -2, 2)
   }
 
   private handlePointerDown = (event: PointerEvent): void => {
@@ -122,18 +100,22 @@ export class InputController {
 
   private handlePointerUp = (): void => {
     this.pointerActive = false
-    this.pointerTarget = null
+    this.pointerLane = null
   }
 
   private updatePointerTarget(event: PointerEvent): void {
     const rect = this.canvas.getBoundingClientRect()
     if (rect.width <= 0) return
-    const normalized = (event.clientX - rect.left) / rect.width
-    this.pointerTarget = clamp(
-      (normalized - 0.5) / ROAD_SCREEN_HALF,
-      -1,
+    const normalized = clamp(
+      (event.clientX - rect.left) / rect.width,
+      0,
       1,
     )
+    this.pointerLane = (normalized < 0.36
+      ? 0
+      : normalized < 0.64
+        ? 1
+        : 2) as LaneIndex
   }
 
   private isTypingTarget(target: EventTarget | null): boolean {

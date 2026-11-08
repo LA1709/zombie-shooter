@@ -1,36 +1,353 @@
-import { COLORS, GAME } from './config'
+import * as THREE from 'three'
+import { COLORS, GAME, LANE_X } from './config'
 import type { GameWorld } from './GameWorld'
-import type { Barrel, Particle, Zombie } from './types'
+import type { Barrel } from './types'
 import { clamp } from './math'
-import { PLAYER_MUZZLE, SpriteBank } from './SpriteBank'
 
-interface ProjectedPoint {
-  x: number
-  y: number
-  scale: number
+const ROAD_WIDTH = 5.2
+const ROAD_LENGTH = 70
+const LANE_WIDTH = 1.55
+
+const ZOMBIE_COLORS = [
+  { body: 0x4f7a6c, skin: 0xa8bd72 },
+  { body: 0x7b604d, skin: 0xb3c889 },
+  { body: 0xb2464c, skin: 0x93ac66 },
+  { body: 0x586d84, skin: 0xb8cd8c },
+]
+
+function toWorldX(x: number): number {
+  return -x * 2.4
 }
 
-const FOCAL_LENGTH = 12
-const ROAD_SCREEN_HALF = 0.44
-const BRIDGE_FAR_DEPTH = 400
-const HORIZON_RATIO = 0.235
-const GROUND_RATIO = 0.865
+function makeTextTexture(text: string, color = '#ffffff'): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas')
+  canvas.width = 512
+  canvas.height = 256
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.font = '900 120px "Arial Black", Impact, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.lineWidth = 18
+    ctx.strokeStyle = 'rgba(8,16,18,0.95)'
+    ctx.strokeText(text, canvas.width / 2, canvas.height / 2)
+    ctx.fillStyle = color
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2)
+  }
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
+}
+
+function makeTextSprite(text: string, color = '#ffffff', scale = 1): THREE.Sprite {
+  const texture = makeTextTexture(text, color)
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+  })
+  const sprite = new THREE.Sprite(material)
+  sprite.scale.set(2.2 * scale, 1.1 * scale, 1)
+  sprite.userData.texture = texture
+  return sprite
+}
+
+const textureLoader = new THREE.TextureLoader()
+
+function loadTexture(path: string): THREE.Texture {
+  const texture = textureLoader.load(path)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.anisotropy = 4
+  return texture
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function makeBillboard(texture: THREE.Texture, width: number, height: number): THREE.Sprite {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }),
+  )
+  sprite.scale.set(width, height, 1)
+  sprite.center.set(0.5, 0)
+  sprite.userData.texture = texture
+  return sprite
+}
+
+function makeGun(weaponLevel: number, scale = 1): THREE.Group {
+  const gun = new THREE.Group()
+  const metal = new THREE.MeshStandardMaterial({ color: 0x202830, roughness: 0.42, metalness: 0.35 })
+  const accent = new THREE.MeshStandardMaterial({ color: 0xff9f1c, roughness: 0.3, metalness: 0.25 })
+  const darkWood = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.8, metalness: 0.05 })
+
+  const addBox = (
+    name: string,
+    size: [number, number, number],
+    position: [number, number, number],
+    material: THREE.Material = metal,
+  ): THREE.Mesh => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material)
+    mesh.name = name
+    mesh.position.set(...position)
+    gun.add(mesh)
+    return mesh
+  }
+
+  const addCylinderZ = (
+    radius: number,
+    length: number,
+    position: [number, number, number],
+    material: THREE.Material = metal,
+  ): THREE.Mesh => {
+    const geometry = new THREE.CylinderGeometry(radius, radius, length, 10)
+    geometry.rotateX(Math.PI / 2)
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.position.set(...position)
+    gun.add(mesh)
+    return mesh
+  }
+
+  if (weaponLevel <= 1) {
+    addBox('receiver', [0.09, 0.13, 0.42], [0, 0, 0.12])
+    addCylinderZ(0.045, 0.2, [0, 0.02, 0.36])
+    addBox('grip', [0.08, 0.22, 0.09], [0, -0.14, -0.08], darkWood)
+  } else if (weaponLevel === 2) {
+    addBox('receiver', [0.12, 0.16, 0.68], [0, 0, 0.18])
+    addCylinderZ(0.055, 0.3, [0, 0.02, 0.55])
+    addBox('magazine', [0.08, 0.26, 0.12], [0, -0.2, 0.08])
+    addBox('sight', [0.07, 0.1, 0.16], [0, 0.12, 0.22], accent)
+    addBox('stock', [0.11, 0.14, 0.24], [0, -0.02, -0.26], darkWood)
+  } else if (weaponLevel === 3) {
+    addBox('receiver', [0.16, 0.18, 0.6], [0, 0, 0.16])
+    addCylinderZ(0.075, 0.52, [-0.055, 0.025, 0.58])
+    addCylinderZ(0.075, 0.52, [0.055, 0.025, 0.58])
+    addBox('pump', [0.2, 0.1, 0.18], [0, -0.04, 0.46], accent)
+    addBox('stock', [0.15, 0.18, 0.28], [0, -0.04, -0.26], darkWood)
+  } else if (weaponLevel === 4) {
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.22, 18), accent)
+    drum.rotation.x = Math.PI / 2
+    drum.position.set(0, -0.1, 0.08)
+    gun.add(drum)
+    addBox('receiver', [0.2, 0.22, 0.54], [0, 0.05, 0.18])
+    for (const x of [-0.1, 0, 0.1]) {
+      addCylinderZ(0.045, 0.58, [x, 0.08, 0.56])
+    }
+  } else {
+    addCylinderZ(0.14, 0.72, [0, 0, 0.22])
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.22, 14), accent)
+    nose.rotation.x = Math.PI / 2
+    nose.position.set(0, 0, 0.66)
+    gun.add(nose)
+    addBox('housing', [0.24, 0.24, 0.34], [0, -0.05, -0.28])
+    addBox('scope', [0.09, 0.1, 0.2], [0, 0.14, 0.06], accent)
+  }
+
+  gun.scale.setScalar(scale)
+  return gun
+}
+
+function makeHumanoid(
+  bodyColor: number,
+  skinColor: number,
+  scale = 1,
+  withGun = false,
+  weaponLevel = 1,
+): THREE.Group {
+  const group = new THREE.Group()
+  const bodyMaterial = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.72, metalness: 0.04 })
+  const skinMaterial = new THREE.MeshStandardMaterial({ color: skinColor, roughness: 0.66, metalness: 0.02 })
+  const pantsMaterial = new THREE.MeshStandardMaterial({ color: 0x2a3438, roughness: 0.8, metalness: 0.02 })
+  const bootMaterial = new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.6, metalness: 0.08 })
+  const zombie = !withGun
+
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 0.72, 4, 12), bodyMaterial)
+  torso.position.y = 1.02
+  group.add(torso)
+
+  const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.24, 0.3), pantsMaterial)
+  pelvis.position.y = 0.58
+  group.add(pelvis)
+
+  const leftLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.08, 0.52, 8), pantsMaterial)
+  leftLeg.position.set(-0.12, 0.32, 0)
+  const rightLeg = leftLeg.clone()
+  rightLeg.position.x = 0.12
+  group.add(leftLeg, rightLeg)
+
+  const leftBoot = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.3), bootMaterial)
+  leftBoot.position.set(-0.12, 0.05, 0.04)
+  const rightBoot = leftBoot.clone()
+  rightBoot.position.x = 0.12
+  group.add(leftBoot, rightBoot)
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.23, 14, 12), skinMaterial)
+  head.position.y = 1.68
+  group.add(head)
+
+  const cap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.2, 0.23, 0.12, 14),
+    new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7, metalness: 0.03 }),
+  )
+  cap.position.set(0, 1.83, -0.02)
+  group.add(cap)
+
+  const leftArm = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.58, 8), skinMaterial)
+  leftArm.position.set(-0.35, 1.18, 0.12)
+  leftArm.rotation.z = 0.45
+  leftArm.rotation.x = -0.65
+  const rightArm = leftArm.clone()
+  rightArm.position.x = 0.35
+  rightArm.rotation.z = -0.45
+  group.add(leftArm, rightArm)
+
+  const leftHand = new THREE.Mesh(new THREE.SphereGeometry(0.085, 10, 8), skinMaterial)
+  leftHand.position.set(-0.42, 1.02, 0.38)
+  const rightHand = leftHand.clone()
+  rightHand.position.x = 0.42
+  group.add(leftHand, rightHand)
+
+  if (zombie) {
+    const eyeMaterial = new THREE.MeshBasicMaterial({ color: 0xf0e9b0 })
+    for (const x of [-0.09, 0.09]) {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), eyeMaterial)
+      eye.position.set(x, 1.72, 0.19)
+      group.add(eye)
+    }
+
+    const mouth = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.06, 0.02),
+      new THREE.MeshStandardMaterial({ color: 0x351f22, roughness: 0.85 }),
+    )
+    mouth.position.set(0, 1.58, 0.205)
+    group.add(mouth)
+
+    const bloodMaterial = new THREE.MeshStandardMaterial({ color: 0xa72e35, roughness: 0.55 })
+    for (const [x, y, s] of [[-0.13, 1.2, 0.06], [0.16, 0.95, 0.05], [0.08, 1.3, 0.04]] as const) {
+      const spot = new THREE.Mesh(new THREE.SphereGeometry(s, 8, 6), bloodMaterial)
+      spot.position.set(x, y, 0.27)
+      group.add(spot)
+    }
+
+    const clawMaterial = new THREE.MeshStandardMaterial({ color: 0xe8e2c8, roughness: 0.45 })
+    for (const side of [-1, 1]) {
+      for (let i = -1; i <= 1; i += 1) {
+        const claw = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.16, 6), clawMaterial)
+        claw.position.set(side * 0.42 + i * 0.05, 0.96, 0.48)
+        claw.rotation.x = Math.PI / 2
+        group.add(claw)
+      }
+    }
+  }
+
+  if (withGun) {
+    const gun = makeGun(weaponLevel)
+    gun.position.set(0.28, 1.1, 0.48)
+    gun.rotation.y = 0.05
+    group.add(gun)
+  }
+
+  group.userData.bodyMaterial = bodyMaterial
+  group.userData.headMaterial = skinMaterial
+  group.userData.leftArm = leftArm
+  group.userData.rightArm = rightArm
+  group.userData.leftLeg = leftLeg
+  group.userData.rightLeg = rightLeg
+  group.traverse((child) => {
+    const mesh = child as THREE.Mesh
+    if (mesh.isMesh) {
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+    }
+  })
+  group.scale.setScalar(scale)
+  return group
+}
 
 export class Renderer {
   private readonly canvas: HTMLCanvasElement
-  private readonly ctx: CanvasRenderingContext2D
-  private readonly sprites = new SpriteBank()
+  private readonly renderer: THREE.WebGLRenderer
+  private readonly scene = new THREE.Scene()
+  private readonly camera: THREE.PerspectiveCamera
   private readonly resizeObserver: ResizeObserver
-  private width = 1
-  private height = 1
-  private dpr = 1
+  private readonly zombieMeshes = new Map<number, THREE.Group>()
+  private readonly gateMeshes = new Map<number, THREE.Group>()
+  private readonly projectilePool: THREE.Group[] = []
+  private readonly tempColor = new THREE.Color()
+  private particlePoints: THREE.Points | null = null
+  private particleGeometry: THREE.BufferGeometry | null = null
+  private textGroup: THREE.Group | null = null
+  private finishLine: THREE.Mesh | null = null
+  private finishGlow: THREE.Mesh | null = null
+  private finishLabel: THREE.Sprite | null = null
+  private aimRing: THREE.Mesh | null = null
+  private laneGuide: THREE.Mesh | null = null
+  private laneLabels: THREE.Sprite[] = []
   private elapsed = 0
+  private readonly heroBack = loadTexture('/assets/hero/rotations/back.png')
+  private readonly heroBackLeft = loadTexture('/assets/hero/rotations/back_left.png')
+  private readonly heroBackRight = loadTexture('/assets/hero/rotations/back_right.png')
+  private readonly heroAim = loadTexture('/assets/hero/actions/aim.png')
+  private readonly heroFire = loadTexture('/assets/hero/actions/fire.png')
+  private readonly heroWalkRight = Array.from({ length: 8 }, (_, i) =>
+    loadTexture(`/assets/hero/walk_frames/walk_${pad2(i + 1)}.png`),
+  )
+  private readonly heroWalkLeft = Array.from({ length: 8 }, (_, i) =>
+    loadTexture(`/assets/hero/walk_frames/walk_l${i + 1}.png`),
+  )
+  private readonly zombieWalk = Array.from({ length: 16 }, (_, i) =>
+    loadTexture(`/assets/zombie/walk/${pad2(17 + i)}.png`),
+  )
+  private readonly zombieAttack = Array.from({ length: 8 }, (_, i) =>
+    loadTexture(`/assets/zombie/attack/${pad2(33 + i)}.png`),
+  )
+  private readonly zombieDeath = Array.from({ length: 8 }, (_, i) =>
+    loadTexture(`/assets/zombie/death/${pad2(41 + i)}.png`),
+  )
+  private readonly muzzleTexture = loadTexture('/assets/hero/vfx_ui/vfx_muzzle_flash.png')
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas
-    const ctx = canvas.getContext('2d', { alpha: false })
-    if (!ctx) throw new Error('Canvas 2D is not supported in this browser.')
-    this.ctx = ctx
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      powerPreference: 'high-performance',
+    })
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+    this.renderer.toneMappingExposure = 1.18
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+
+    this.scene.background = new THREE.Color('#0c5064')
+    this.scene.fog = new THREE.Fog('#0c5064', 16, 68)
+
+    this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 220)
+    this.camera.position.set(0, 6.4, -8.4)
+    this.camera.lookAt(0, 1.1, 9)
+
+    const ambient = new THREE.HemisphereLight(0xdff4ff, 0x2a3a2d, 1.05)
+    const sun = new THREE.DirectionalLight(0xffe0a3, 2.6)
+    sun.position.set(4, 10, -3)
+    sun.castShadow = true
+    sun.shadow.mapSize.set(1024, 1024)
+    sun.shadow.camera.left = -6
+    sun.shadow.camera.right = 6
+    sun.shadow.camera.top = 12
+    sun.shadow.camera.bottom = -4
+    sun.shadow.camera.near = 0.5
+    sun.shadow.camera.far = 30
+    const rim = new THREE.DirectionalLight(0x5de4ee, 0.65)
+    rim.position.set(-4, 6, 12)
+    this.scene.add(ambient, sun, rim)
+
+    this.buildBridge()
+    this.buildFinishLine()
+    this.buildLaneGuide()
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(canvas)
     this.resize()
@@ -38,949 +355,625 @@ export class Renderer {
 
   destroy(): void {
     this.resizeObserver.disconnect()
+    this.scene.traverse((object) => {
+      const mesh = object as THREE.Mesh
+      mesh.geometry?.dispose()
+      const material = (mesh as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
+      if (Array.isArray(material)) {
+        for (const item of material) item.dispose()
+      } else {
+        material?.dispose()
+      }
+      const sprite = object as THREE.Sprite
+      const texture = (sprite.userData.texture as THREE.CanvasTexture | undefined) ?? null
+      texture?.dispose()
+    })
+    this.renderer.dispose()
   }
 
   render(world: GameWorld, dt: number): void {
     this.elapsed += dt
-    const ctx = this.ctx
-    const { width, height } = this
+    const shake = world.shake > 0 ? world.shake * 0.025 : 0
+    this.camera.position.x = (Math.random() * 2 - 1) * shake
+    this.camera.position.y = 6.4 + (Math.random() * 2 - 1) * shake
+    this.camera.lookAt(0, 1.1, 9)
 
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
-    ctx.fillStyle = '#0c5064'
-    ctx.fillRect(0, 0, width, height)
+    this.syncZombies(world)
+    this.syncGates(world)
+    this.syncPlayer(world)
+    this.syncTracers(world)
+    this.syncParticles(world)
+    this.syncFloatingTexts(world)
+    this.syncAimTarget(world)
+    this.syncFinishLine(world)
+    this.syncLaneGuide(world)
 
-    const shakeX = world.shake > 0 ? (Math.random() * 2 - 1) * world.shake : 0
-    const shakeY = world.shake > 0 ? (Math.random() * 2 - 1) * world.shake : 0
-
-    ctx.save()
-    ctx.translate(shakeX, shakeY)
-    this.drawBackdrop()
-    this.drawBridge()
-    this.drawWorld(world)
-    ctx.restore()
-
-    this.drawScreenEffects(world)
+    this.renderer.render(this.scene, this.camera)
   }
 
   private resize(): void {
     const rect = this.canvas.getBoundingClientRect()
     if (rect.width < 1 || rect.height < 1) return
-
-    this.width = rect.width
-    this.height = rect.height
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2)
-    this.canvas.width = Math.round(rect.width * this.dpr)
-    this.canvas.height = Math.round(rect.height * this.dpr)
+    const width = Math.max(1, rect.width)
+    const height = Math.max(1, rect.height)
+    this.renderer.setSize(width, height, false)
+    this.camera.aspect = width / height
+    this.camera.updateProjectionMatrix()
   }
 
-  private project(x: number, z: number): ProjectedPoint {
-    const depth = Math.max(0, z)
-    const scale = FOCAL_LENGTH / (FOCAL_LENGTH + depth)
-    return {
-      x: this.width * 0.5 + x * this.width * ROAD_SCREEN_HALF * scale,
-      y:
-        this.height * HORIZON_RATIO +
-        this.height * (GROUND_RATIO - HORIZON_RATIO) * scale,
-      scale,
-    }
-  }
-
-  private drawBackdrop(): void {
-    const { ctx, width, height } = this
-    const horizon = height * HORIZON_RATIO
-
-    const sky = ctx.createLinearGradient(0, -30, 0, horizon + 10)
-    sky.addColorStop(0, '#78cfdf')
-    sky.addColorStop(0.62, '#b7e9e9')
-    sky.addColorStop(1, '#e8f6e8')
-    ctx.fillStyle = sky
-    ctx.fillRect(-30, -30, width + 60, horizon + 40)
-
-    const sea = ctx.createLinearGradient(0, horizon, 0, height + 30)
-    sea.addColorStop(0, '#53b9c8')
-    sea.addColorStop(0.25, '#2a93aa')
-    sea.addColorStop(0.72, '#16738c')
-    sea.addColorStop(1, '#0d536b')
-    ctx.fillStyle = sea
-    ctx.fillRect(-30, horizon, width + 60, height - horizon + 60)
-
-    // Sun haze
-    const sun = ctx.createRadialGradient(
-      width * 0.76,
-      height * 0.08,
-      0,
-      width * 0.76,
-      height * 0.08,
-      height * 0.3,
+  private buildBridge(): void {
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(ROAD_WIDTH, ROAD_LENGTH),
+      new THREE.MeshLambertMaterial({ color: 0x3e434a }),
     )
-    sun.addColorStop(0, 'rgba(255, 250, 205, 0.55)')
-    sun.addColorStop(0.35, 'rgba(255, 244, 190, 0.18)')
-    sun.addColorStop(1, 'rgba(255, 244, 190, 0)')
-    ctx.fillStyle = sun
-    ctx.fillRect(0, 0, width, height * 0.5)
+    road.rotation.x = -Math.PI / 2
+    road.position.set(0, 0, 18)
+    this.scene.add(road)
 
-    // Clouds
-    for (let i = 0; i < 5; i += 1) {
-      const drift = this.elapsed * (3 + i * 0.8)
-      const x = ((i * 0.29 + 0.08) * width + drift) % (width + 180) - 90
-      const y = height * (0.045 + (i % 3) * 0.036)
-      this.drawCloud(x, y, 0.75 + (i % 3) * 0.18, 0.14 + (i % 2) * 0.04)
-    }
-
-    // Horizon haze
-    const haze = ctx.createLinearGradient(0, horizon - 10, 0, horizon + 48)
-    haze.addColorStop(0, 'rgba(236, 252, 240, 0)')
-    haze.addColorStop(0.45, 'rgba(221, 248, 235, 0.36)')
-    haze.addColorStop(1, 'rgba(190, 238, 229, 0)')
-    ctx.fillStyle = haze
-    ctx.fillRect(0, horizon - 10, width, 62)
-
-    // Distant ships
-    this.drawShip(width * 0.13, horizon + height * 0.012, 0.8)
-    this.drawShip(width * 0.86, horizon + height * 0.02, 0.58)
-
-    // Ocean glints
-    ctx.save()
-    ctx.lineCap = 'round'
-    for (let i = 0; i < 34; i += 1) {
-      const t = i / 34
-      const y = horizon + Math.pow(t, 1.55) * (height - horizon)
-      const wave = Math.sin(this.elapsed * 0.8 + i * 1.7) * 0.5 + 0.5
-      const lineWidth = 8 + t * 52
-      const alpha = 0.04 + t * 0.11 + wave * 0.035
-      ctx.strokeStyle = `rgba(203, 255, 250, ${alpha.toFixed(3)})`
-      ctx.lineWidth = 1 + t * 2
-      for (let j = 0; j < 4; j += 1) {
-        const x =
-          ((j * 0.27 + 0.04 + Math.sin(i * 2.3 + j) * 0.04 + this.elapsed * 0.004) %
-            1.08) *
-          width
-        ctx.beginPath()
-        ctx.moveTo(x, y)
-        ctx.lineTo(x + lineWidth, y)
-        ctx.stroke()
-      }
-    }
-    ctx.restore()
-  }
-
-  private drawCloud(x: number, y: number, scale: number, alpha: number): void {
-    const { ctx } = this
-    ctx.save()
-    ctx.globalAlpha = alpha
-    ctx.fillStyle = '#ffffff'
-    ctx.beginPath()
-    ctx.ellipse(x, y, 42 * scale, 15 * scale, 0, 0, Math.PI * 2)
-    ctx.ellipse(x - 28 * scale, y + 4 * scale, 26 * scale, 11 * scale, 0, 0, Math.PI * 2)
-    ctx.ellipse(x + 32 * scale, y + 5 * scale, 30 * scale, 10 * scale, 0, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
-  }
-
-  private drawShip(x: number, y: number, scale: number): void {
-    const { ctx } = this
-    ctx.save()
-    ctx.translate(x, y)
-    ctx.scale(scale, scale)
-    ctx.globalAlpha = 0.38
-    ctx.fillStyle = '#315963'
-    ctx.beginPath()
-    ctx.moveTo(-46, 0)
-    ctx.lineTo(48, 0)
-    ctx.lineTo(36, 10)
-    ctx.lineTo(-34, 10)
-    ctx.closePath()
-    ctx.fill()
-    ctx.fillStyle = '#e8e5ce'
-    for (let i = 0; i < 4; i += 1) {
-      ctx.fillRect(-32 + i * 16, -8, 12, 8)
-    }
-    ctx.fillStyle = '#d8d3b9'
-    ctx.fillRect(32, -15, 8, 15)
-    ctx.restore()
-  }
-
-  private drawBridge(): void {
-    const { ctx, width, height } = this
-
-    // Concrete bridge body
-    const nearLeft = this.project(-1.17, 0)
-    const nearRight = this.project(1.17, 0)
-    const farLeft = this.project(-1.17, BRIDGE_FAR_DEPTH)
-    const farRight = this.project(1.17, BRIDGE_FAR_DEPTH)
-    const concrete = ctx.createLinearGradient(0, farLeft.y, 0, height)
-    concrete.addColorStop(0, '#c7c9b9')
-    concrete.addColorStop(0.35, '#b4b5a6')
-    concrete.addColorStop(1, '#8d8e83')
-    ctx.fillStyle = concrete
-    ctx.beginPath()
-    ctx.moveTo(nearLeft.x, nearLeft.y)
-    ctx.lineTo(nearRight.x, nearRight.y)
-    ctx.lineTo(farRight.x, farRight.y)
-    ctx.lineTo(farLeft.x, farLeft.y)
-    ctx.closePath()
-    ctx.fill()
-
-    // Asphalt
-    const nearRoadLeft = this.project(-1, 0)
-    const nearRoadRight = this.project(1, 0)
-    const farRoadLeft = this.project(-1, BRIDGE_FAR_DEPTH)
-    const farRoadRight = this.project(1, BRIDGE_FAR_DEPTH)
-    const asphalt = ctx.createLinearGradient(0, farRoadLeft.y, 0, height)
-    asphalt.addColorStop(0, '#757b80')
-    asphalt.addColorStop(0.3, '#5b6168')
-    asphalt.addColorStop(1, '#3e434a')
-    ctx.fillStyle = asphalt
-    ctx.beginPath()
-    ctx.moveTo(nearRoadLeft.x, nearRoadLeft.y)
-    ctx.lineTo(nearRoadRight.x, nearRoadRight.y)
-    ctx.lineTo(farRoadRight.x, farRoadRight.y)
-    ctx.lineTo(farRoadLeft.x, farRoadLeft.y)
-    ctx.closePath()
-    ctx.fill()
-
-    // Shoulder seams
-    ctx.strokeStyle = 'rgba(32, 42, 43, 0.35)'
-    ctx.lineWidth = 1.2
-    for (let z = 2; z < 70; z += 6) {
-      const a = this.project(-1.17, z)
-      const b = this.project(-1, z)
-      const c = this.project(1.17, z)
-      const d = this.project(1, z)
-      ctx.beginPath()
-      ctx.moveTo(a.x, a.y)
-      ctx.lineTo(b.x, b.y)
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.moveTo(c.x, c.y)
-      ctx.lineTo(d.x, d.y)
-      ctx.stroke()
-    }
-
-    // Expansion joints
-    ctx.strokeStyle = 'rgba(24, 31, 34, 0.3)'
-    ctx.lineWidth = 2
-    for (let z = 10; z < 90; z += 16) {
-      const left = this.project(-0.98, z)
-      const right = this.project(0.98, z)
-      ctx.beginPath()
-      ctx.moveTo(left.x, left.y)
-      ctx.lineTo(right.x, right.y)
-      ctx.stroke()
-    }
-
-    // Solid edge lines
-    this.drawRoadQuad(-0.955, -0.93, 0, 100, 'rgba(235, 240, 228, 0.6)')
-    this.drawRoadQuad(0.93, 0.955, 0, 100, 'rgba(235, 240, 228, 0.6)')
-
-    // Dashed center line
-    for (let z = 1.2; z < 90; z += 5.4) {
-      this.drawRoadQuad(-0.014, 0.014, z, z + 2.7, 'rgba(245, 247, 233, 0.82)')
-    }
-
-    // Faint tire wear
-    ctx.fillStyle = 'rgba(30, 35, 39, 0.12)'
-    for (const x of [-0.56, -0.18, 0.18, 0.56]) {
-      const a = this.project(x - 0.045, 0)
-      const b = this.project(x + 0.045, 0)
-      const c = this.project(x + 0.04, 90)
-      const d = this.project(x - 0.04, 90)
-      ctx.beginPath()
-      ctx.moveTo(a.x, a.y)
-      ctx.lineTo(b.x, b.y)
-      ctx.lineTo(c.x, c.y)
-      ctx.lineTo(d.x, d.y)
-      ctx.closePath()
-      ctx.fill()
-    }
-
-    // Guard rails
-    this.drawRailing(-1.15)
-    this.drawRailing(1.15)
-
-    // Static roadside cones
-    this.drawCone(-0.87, 13.5)
-    this.drawCone(0.9, 21)
-    this.drawCone(-0.91, 30)
-
-    // Distant bridge fade
-    const fade = ctx.createLinearGradient(0, farLeft.y - 4, 0, farLeft.y + height * 0.13)
-    fade.addColorStop(0, 'rgba(224, 248, 238, 0.48)')
-    fade.addColorStop(1, 'rgba(224, 248, 238, 0)')
-    ctx.fillStyle = fade
-    ctx.fillRect(0, farLeft.y - 4, width, height * 0.14)
-  }
-
-  private drawRoadQuad(
-    leftX: number,
-    rightX: number,
-    nearZ: number,
-    farZ: number,
-    color: string,
-  ): void {
-    const { ctx } = this
-    const a = this.project(leftX, nearZ)
-    const b = this.project(rightX, nearZ)
-    const c = this.project(rightX, farZ)
-    const d = this.project(leftX, farZ)
-    ctx.fillStyle = color
-    ctx.beginPath()
-    ctx.moveTo(a.x, a.y)
-    ctx.lineTo(b.x, b.y)
-    ctx.lineTo(c.x, c.y)
-    ctx.lineTo(d.x, d.y)
-    ctx.closePath()
-    ctx.fill()
-  }
-
-  private drawRailing(x: number): void {
-    const { ctx, height } = this
-    const posts: Array<{ x: number; baseY: number; topY: number; scale: number }> = []
-
-    for (let z = 0; z <= 52; z += 3.1) {
-      const point = this.project(x, z)
-      const postHeight = height * 0.05 * point.scale
-      posts.push({
-        x: point.x,
-        baseY: point.y,
-        topY: point.y - postHeight,
-        scale: point.scale,
-      })
-    }
-
-    // Rails first so posts sit on top.
-    for (const railOffset of [0, 0.42, 0.8]) {
-      for (let i = 0; i < posts.length - 1; i += 1) {
-        const a = posts[i]
-        const b = posts[i + 1]
-        const aY = a.baseY - (a.baseY - a.topY) * (1 - railOffset)
-        const bY = b.baseY - (b.baseY - b.topY) * (1 - railOffset)
-        ctx.strokeStyle =
-          railOffset === 0 ? '#eef1e7' : 'rgba(222, 228, 216, 0.86)'
-        ctx.lineWidth = Math.max(1, 2.7 * ((a.scale + b.scale) * 0.5))
-        ctx.beginPath()
-        ctx.moveTo(a.x, aY)
-        ctx.lineTo(b.x, bY)
-        ctx.stroke()
-      }
-    }
-
-    for (const post of posts) {
-      const postHeight = post.baseY - post.topY
-      ctx.strokeStyle = '#dce1d5'
-      ctx.lineWidth = Math.max(1.5, 4.4 * post.scale)
-      ctx.beginPath()
-      ctx.moveTo(post.x, post.baseY)
-      ctx.lineTo(post.x, post.topY)
-      ctx.stroke()
-      ctx.strokeStyle = 'rgba(56, 67, 66, 0.5)'
-      ctx.lineWidth = Math.max(1, 1.4 * post.scale)
-      ctx.beginPath()
-      ctx.moveTo(post.x + 1.5 * post.scale, post.baseY)
-      ctx.lineTo(post.x + 1.5 * post.scale, post.topY + postHeight * 0.1)
-      ctx.stroke()
-    }
-  }
-
-  private drawCone(x: number, z: number): void {
-    const { ctx, height } = this
-    const p = this.project(x, z)
-    const coneHeight = height * 0.036 * p.scale
-    const coneWidth = coneHeight * 0.52
-
-    ctx.save()
-    ctx.translate(p.x, p.y)
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'
-    ctx.beginPath()
-    ctx.ellipse(0, 0, coneWidth * 0.72, coneHeight * 0.12, 0, 0, Math.PI * 2)
-    ctx.fill()
-
-    ctx.fillStyle = '#f07b1f'
-    ctx.strokeStyle = '#2b2d2b'
-    ctx.lineWidth = Math.max(1, 1.7 * p.scale)
-    ctx.beginPath()
-    ctx.moveTo(0, -coneHeight)
-    ctx.lineTo(coneWidth * 0.45, 0)
-    ctx.lineTo(-coneWidth * 0.45, 0)
-    ctx.closePath()
-    ctx.fill()
-    ctx.stroke()
-
-    ctx.fillStyle = '#f3ede0'
-    ctx.fillRect(
-      -coneWidth * 0.27,
-      -coneHeight * 0.54,
-      coneWidth * 0.54,
-      Math.max(1.5, coneHeight * 0.14),
+    const water = new THREE.Mesh(
+      new THREE.PlaneGeometry(120, ROAD_LENGTH + 20),
+      new THREE.MeshLambertMaterial({ color: 0x16738c }),
     )
-    ctx.fillStyle = '#f07b1f'
-    ctx.fillRect(
-      -coneWidth * 0.32,
-      -coneHeight * 0.12,
-      coneWidth * 0.64,
-      Math.max(1.5, coneHeight * 0.12),
-    )
-    ctx.restore()
-  }
+    water.rotation.x = -Math.PI / 2
+    water.position.set(0, -0.4, 18)
+    this.scene.add(water)
 
-  private drawWorld(world: GameWorld): void {
-    const entities: Array<
-      | { kind: 'zombie'; z: number; zombie: Zombie }
-      | { kind: 'barrel'; z: number; barrel: Barrel }
-    > = [
-      ...world.zombies
-        .filter((zombie) => zombie.hp > 0)
-        .map((zombie) => ({
-          kind: 'zombie' as const,
-          z: zombie.z,
-          zombie,
-        })),
-      ...world.barrels
-        .filter((barrel) => barrel.hp > 0)
-        .map((barrel) => ({
-          kind: 'barrel' as const,
-          z: barrel.z,
-          barrel,
-        })),
-    ].sort((a, b) => b.z - a.z)
-
-    for (const entity of entities) {
-      if (entity.kind === 'zombie') {
-        this.drawZombie(entity.zombie, world.time)
-      } else {
-        this.drawBarrel(entity.barrel, world.time)
-      }
-    }
-
-    this.drawTracers(world)
-    this.drawPlayer(world)
-    this.drawParticles(world.particles)
-    if (world.status !== 'overrun') this.drawBarrelLabels(world)
-    this.drawFloatingTexts(world)
-    this.drawAimTarget(world)
-  }
-
-  private drawZombie(zombie: Zombie, time: number): void {
-    const { ctx, height } = this
-    const point = this.project(zombie.x, zombie.z)
-    const spriteHeight = height * 0.27 * point.scale * zombie.scale
-    const spriteWidth = spriteHeight * (180 / 280)
-    const bob = Math.sin(zombie.walkPhase + time * 1.7) * 2.2 * point.scale
-    const groundY = point.y + bob
-    const frame =
-      zombie.state === 'grabbing' ? 2 : Math.floor(zombie.walkPhase) % 3
-    const sprite = this.sprites.zombies[zombie.variant][frame]
-
-    // Shadow
-    ctx.fillStyle = `rgba(7, 18, 20, ${0.26 * point.scale})`
-    ctx.beginPath()
-    ctx.ellipse(
-      point.x,
-      point.y + 2,
-      spriteWidth * 0.43,
-      spriteWidth * 0.13,
-      0,
-      0,
-      Math.PI * 2,
-    )
-    ctx.fill()
-
-    ctx.save()
-    if (zombie.hitFlash > 0) {
-      ctx.filter = 'brightness(2.6) saturate(0.35)'
-    }
-    ctx.drawImage(
-      sprite,
-      point.x - spriteWidth / 2,
-      groundY - spriteHeight,
-      spriteWidth,
-      spriteHeight,
-    )
-    ctx.restore()
-
-    if (zombie.hp < zombie.maxHp) {
-      const barWidth = Math.max(22, spriteWidth * 0.58)
-      const barHeight = Math.max(3, 4.2 * point.scale)
-      const barY = groundY - spriteHeight - barHeight - 7 * point.scale
-      ctx.fillStyle = 'rgba(8, 17, 18, 0.72)'
-      ctx.fillRect(point.x - barWidth / 2 - 1, barY - 1, barWidth + 2, barHeight + 2)
-      ctx.fillStyle = zombie.hp / zombie.maxHp > 0.35 ? COLORS.lime : '#ff6b4a'
-      ctx.fillRect(
-        point.x - barWidth / 2,
-        barY,
-        barWidth * clamp(zombie.hp / zombie.maxHp, 0, 1),
-        barHeight,
-      )
-    }
-  }
-
-  private drawBarrel(barrel: Barrel, time: number): void {
-    const { ctx, height } = this
-    const point = this.project(barrel.x, barrel.z)
-    const spriteHeight = height * 0.155 * point.scale
-    const spriteWidth = spriteHeight * 0.8
-    const bob = Math.sin(time * 2.2 + barrel.seed) * 1.4 * point.scale
-    const groundY = point.y + bob
-
-    ctx.fillStyle = `rgba(7, 18, 20, ${0.28 * point.scale})`
-    ctx.beginPath()
-    ctx.ellipse(
-      point.x,
-      point.y + 2,
-      spriteWidth * 0.46,
-      spriteWidth * 0.14,
-      0,
-      0,
-      Math.PI * 2,
-    )
-    ctx.fill()
-
-    ctx.save()
-    if (barrel.hitFlash > 0) {
-      ctx.filter = 'brightness(2.2) saturate(0.6)'
-    }
-    ctx.drawImage(
-      this.sprites.barrel,
-      point.x - spriteWidth / 2,
-      groundY - spriteHeight,
-      spriteWidth,
-      spriteHeight,
-    )
-    ctx.restore()
-  }
-
-  private drawBarrelLabels(world: GameWorld): void {
-    const { ctx, height } = this
-    for (const barrel of world.barrels) {
-      if (barrel.hp <= 0) continue
-      const point = this.project(barrel.x, barrel.z)
-      const spriteHeight = height * 0.155 * point.scale
-      const bob =
-        Math.sin(world.time * 2.2 + barrel.seed) * 1.4 * point.scale
-      const numberY = point.y + bob - spriteHeight * 0.55
-      const fontSize = clamp(44 * point.scale, 17, 46)
-      const label = `${Math.max(0, Math.ceil(barrel.hp))}`
-      const labelColor =
-        barrel.reward === 'medkit'
-          ? COLORS.lime
-          : barrel.reward === 'overdrive'
-            ? COLORS.cyan
-            : COLORS.gold
-
-      ctx.save()
-      ctx.font = `900 ${fontSize}px "Arial Black", Impact, sans-serif`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.lineWidth = Math.max(3, fontSize * 0.22)
-      ctx.strokeStyle = 'rgba(8, 16, 18, 0.92)'
-      ctx.strokeText(label, point.x, numberY)
-      ctx.fillStyle = labelColor
-      ctx.fillText(label, point.x, numberY)
-      ctx.restore()
-    }
-  }
-
-  private drawPlayer(world: GameWorld): void {
-    const { ctx, height } = this
-    const player = world.player
-    const point = this.project(player.x, 0)
-    const spriteHeight = height * 0.285
-    const spriteWidth = spriteHeight * (180 / 280)
-    const idleBob = Math.sin(world.time * 6) * 1.2
-    const overrunProgress =
-      world.status === 'overrun'
-        ? clamp(1 - world.overrunTimer / GAME.contact.overrunDuration, 0, 1)
-        : 0
-    const grabShake =
-      player.grabTimer > 0 ? Math.sin(world.time * 42) * 2.4 : 0
-    const groundY = point.y + idleBob + overrunProgress * height * 0.045
-    const flicker =
-      player.invulnerability > 0 &&
-      player.dashTimer <= 0 &&
-      overrunProgress === 0 &&
-      Math.floor(world.time * 24) % 2 === 0
-        ? 0.55
-        : 1
-
-    // Shadow
-    ctx.fillStyle = 'rgba(5, 16, 19, 0.34)'
-    ctx.beginPath()
-    ctx.ellipse(
-      point.x,
-      point.y + 4,
-      spriteWidth * 0.46,
-      spriteWidth * 0.14,
-      0,
-      0,
-      Math.PI * 2,
-    )
-    ctx.fill()
-
-    ctx.save()
-    ctx.globalAlpha = flicker
-    ctx.translate(point.x + grabShake, groundY)
-    ctx.scale(player.facing, 1)
-    ctx.rotate(
-      overrunProgress * 0.55 +
-        (player.grabTimer > 0 ? Math.sin(world.time * 42) * 0.018 : 0),
-    )
-    ctx.drawImage(
-      this.sprites.player,
-      -spriteWidth / 2,
-      -spriteHeight,
-      spriteWidth,
-      spriteHeight,
-    )
-
-    if (player.grabTimer > 0 && overrunProgress === 0) {
-      this.drawGrabHands(spriteWidth, spriteHeight)
-    }
-    ctx.restore()
-
-    if (player.muzzleFlash > 0) {
-      const muzzle = this.getMuzzlePosition(world)
-      const strength = player.muzzleFlash / 0.055
-      this.drawMuzzleFlash(muzzle.x, muzzle.y, strength, world.time)
-    }
-
-    if (player.dashTimer > 0) {
-      this.drawDashStreaks(point.x, groundY - spriteHeight * 0.5)
-    }
-  }
-
-  private drawGrabHands(width: number, height: number): void {
-    const { ctx } = this
-    const handY = -height * 0.64
+    const sideMaterial = new THREE.MeshLambertMaterial({ color: 0x8d8e83 })
+    const railMaterial = new THREE.MeshLambertMaterial({ color: 0xeef1e7 })
+    const dividerMaterial = new THREE.MeshLambertMaterial({ color: 0xffd23f })
+    const centerMaterial = new THREE.MeshLambertMaterial({ color: 0xf5f7e9 })
 
     for (const side of [-1, 1]) {
-      ctx.save()
-      ctx.translate(side * width * 0.29, handY)
-      ctx.rotate(side * 0.16)
-      ctx.fillStyle = '#a8bd72'
-      ctx.strokeStyle = '#142125'
-      ctx.lineWidth = Math.max(2, width * 0.018)
-      ctx.beginPath()
-      ctx.ellipse(0, 0, width * 0.105, height * 0.045, 0, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.stroke()
+      const concrete = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.5, ROAD_LENGTH), sideMaterial)
+      concrete.position.set(side * 2.75, 0.22, 18)
+      this.scene.add(concrete)
 
-      ctx.lineWidth = Math.max(1.5, width * 0.012)
-      for (let i = -1; i <= 1; i += 1) {
-        ctx.beginPath()
-        ctx.moveTo(i * width * 0.035, -height * 0.01)
-        ctx.lineTo(i * width * 0.042, height * 0.034)
-        ctx.stroke()
-      }
-      ctx.restore()
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, ROAD_LENGTH), railMaterial)
+      rail.position.set(side * 2.45, 0.72, 18)
+      this.scene.add(rail)
+    }
+
+    for (const x of [-0.76, 0.76]) {
+      const divider = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, ROAD_LENGTH), dividerMaterial)
+      divider.position.set(x, 0.015, 18)
+      this.scene.add(divider)
+    }
+
+    for (let z = 1.2; z < 42; z += 5.4) {
+      const dash = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.015, 1.8), centerMaterial)
+      dash.position.set(0, 0.012, z)
+      this.scene.add(dash)
+    }
+
+    const cityMaterial = new THREE.MeshLambertMaterial({ color: 0x7aa7a0 })
+    for (let i = 0; i < 22; i += 1) {
+      const side = i % 2 === 0 ? -1 : 1
+      const height = 2 + ((i * 37) % 9)
+      const building = new THREE.Mesh(new THREE.BoxGeometry(1.6 + (i % 4) * 0.5, height, 1.6), cityMaterial)
+      building.position.set(side * (4.2 + (i % 5) * 0.7), height / 2, 5 + (i * 2.3) % 38)
+      const windowMaterial = new THREE.MeshBasicMaterial({ color: 0xdff7ff, transparent: true, opacity: 0.22 })
+      const windowBand = new THREE.Mesh(new THREE.BoxGeometry(building.geometry.parameters.width, 0.18, building.geometry.parameters.depth + 0.04), windowMaterial)
+      windowBand.position.y = height * 0.58
+      building.add(windowBand)
+      this.scene.add(building)
     }
   }
 
-  private getMuzzlePosition(world: GameWorld): { x: number; y: number } {
-    const point = this.project(world.player.x, 0)
-    const spriteHeight = this.height * 0.285
-    const spriteWidth = spriteHeight * (180 / 280)
-    return {
-      x: point.x + world.player.facing * spriteWidth * PLAYER_MUZZLE.x,
-      y: point.y - spriteHeight * PLAYER_MUZZLE.y,
-    }
-  }
+  private buildFinishLine(): void {
+    const lineZ = GAME.world.attackDepth
+    const dangerMaterial = new THREE.MeshBasicMaterial({
+      color: '#ff2a35',
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+    })
+    this.finishGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(ROAD_WIDTH, 0.72),
+      dangerMaterial,
+    )
+    this.finishGlow.rotation.x = -Math.PI / 2
+    this.finishGlow.position.set(0, 0.025, lineZ)
+    this.scene.add(this.finishGlow)
 
-  private drawMuzzleFlash(
-    x: number,
-    y: number,
-    strength: number,
-    time: number,
-  ): void {
-    const { ctx } = this
-    const size = 16 + strength * 18
-    ctx.save()
-    ctx.translate(x, y)
-    ctx.rotate(time * 17)
-    ctx.globalCompositeOperation = 'lighter'
-    const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, size)
-    glow.addColorStop(0, 'rgba(255, 255, 231, 0.95)')
-    glow.addColorStop(0.3, 'rgba(255, 226, 93, 0.85)')
-    glow.addColorStop(1, 'rgba(255, 156, 20, 0)')
-    ctx.fillStyle = glow
-    ctx.beginPath()
-    ctx.arc(0, 0, size, 0, Math.PI * 2)
-    ctx.fill()
+    this.finishLine = new THREE.Mesh(
+      new THREE.BoxGeometry(ROAD_WIDTH, 0.09, 0.22),
+      new THREE.MeshBasicMaterial({ color: '#ff2a35' }),
+    )
+    this.finishLine.position.set(0, 0.06, lineZ)
+    this.scene.add(this.finishLine)
 
-    ctx.fillStyle = '#fffbe2'
-    ctx.beginPath()
-    for (let i = 0; i < 8; i += 1) {
-      const angle = (i / 8) * Math.PI * 2
-      const radius = i % 2 === 0 ? size * 0.8 : size * 0.28
-      const px = Math.cos(angle) * radius
-      const py = Math.sin(angle) * radius
-      if (i === 0) ctx.moveTo(px, py)
-      else ctx.lineTo(px, py)
-    }
-    ctx.closePath()
-    ctx.fill()
-    ctx.restore()
-  }
-
-  private drawTracers(world: GameWorld): void {
-    const { ctx } = this
-    const muzzle = this.getMuzzlePosition(world)
-    for (const tracer of world.tracers) {
-      const target = this.project(tracer.targetX, tracer.targetZ)
-      const alpha = clamp(tracer.life / tracer.maxLife, 0, 1)
-      const width = (tracer.crit ? 3.6 : 2.2) * (0.7 + target.scale * 0.5)
-      const color = tracer.crit ? '#ffd23f' : '#ffed9e'
-
-      ctx.save()
-      ctx.globalCompositeOperation = 'lighter'
-      ctx.globalAlpha = alpha
-      ctx.strokeStyle = color
-      ctx.shadowColor = tracer.crit ? COLORS.gold : '#fff1a8'
-      ctx.shadowBlur = 12
-      ctx.lineWidth = width + 2
-      ctx.lineCap = 'round'
-      ctx.beginPath()
-      ctx.moveTo(muzzle.x, muzzle.y)
-      ctx.lineTo(target.x, target.y - this.height * 0.14 * target.scale)
-      ctx.stroke()
-
-      ctx.strokeStyle = '#fffdf0'
-      ctx.shadowBlur = 4
-      ctx.lineWidth = Math.max(1, width * 0.45)
-      ctx.beginPath()
-      ctx.moveTo(muzzle.x, muzzle.y)
-      ctx.lineTo(target.x, target.y - this.height * 0.14 * target.scale)
-      ctx.stroke()
-
-      const impact = ctx.createRadialGradient(
-        target.x,
-        target.y - this.height * 0.14 * target.scale,
-        0,
-        target.x,
-        target.y - this.height * 0.14 * target.scale,
-        18 * target.scale,
+    for (let i = 0; i < 16; i += 1) {
+      const stripe = new THREE.Mesh(
+        new THREE.BoxGeometry(0.22, 0.02, 0.5),
+        new THREE.MeshBasicMaterial({ color: i % 2 === 0 ? '#ff2a35' : '#ffd23f' }),
       )
-      impact.addColorStop(0, 'rgba(255, 255, 226, 0.8)')
-      impact.addColorStop(1, 'rgba(255, 180, 30, 0)')
-      ctx.fillStyle = impact
-      ctx.beginPath()
-      ctx.arc(
-        target.x,
-        target.y - this.height * 0.14 * target.scale,
-        18 * target.scale,
-        0,
-        Math.PI * 2,
+      stripe.position.set(-ROAD_WIDTH / 2 + 0.22 + i * 0.31, 0.035, lineZ - 0.75)
+      this.scene.add(stripe)
+    }
+
+    for (const side of [-1, 1]) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.22, 1.15, 0.22),
+        new THREE.MeshLambertMaterial({ color: 0x202830 }),
       )
-      ctx.fill()
-      ctx.restore()
+      post.position.set(side * 2.42, 0.57, lineZ)
+      this.scene.add(post)
+
+      const lamp = new THREE.Mesh(
+        new THREE.SphereGeometry(0.16, 12, 8),
+        new THREE.MeshBasicMaterial({ color: '#ff2a35' }),
+      )
+      lamp.position.set(side * 2.42, 1.28, lineZ)
+      this.scene.add(lamp)
+    }
+
+    this.finishLabel = makeTextSprite('HOME LINE', '#ff6b61', 0.55)
+    this.finishLabel.position.set(0, 0.75, lineZ + 0.25)
+    this.scene.add(this.finishLabel)
+  }
+
+  private syncFinishLine(world: GameWorld): void {
+    const nearest = world.zombies
+      .filter((zombie) => zombie.hp > 0)
+      .reduce((closest, zombie) => Math.min(closest, zombie.z), Number.POSITIVE_INFINITY)
+    const danger = clamp((7 - nearest) / 3, 0, 1)
+    const pulse = 0.72 + Math.sin(this.elapsed * 7) * 0.28 + danger * 0.55
+
+    if (this.finishLine) {
+      const material = this.finishLine.material as THREE.MeshBasicMaterial
+      material.color.set(danger > 0.4 ? '#ff1744' : '#ff2a35')
+      this.finishLine.scale.y = 1 + pulse * 0.45
+    }
+
+    if (this.finishGlow) {
+      const material = this.finishGlow.material as THREE.MeshBasicMaterial
+      material.opacity = 0.24 + pulse * 0.16 + danger * 0.22
+    }
+
+    if (this.finishLabel) {
+      const material = this.finishLabel.material as THREE.SpriteMaterial
+      material.opacity = 0.72 + danger * 0.28
+      this.finishLabel.scale.setScalar(1 + danger * 0.12)
     }
   }
 
-  private drawParticles(particles: Particle[]): void {
-    const { ctx, height } = this
-    for (const particle of particles) {
-      const point = this.project(particle.x, particle.z)
-      const radius = Math.max(1, particle.size * point.scale)
-      const screenY =
-        point.y - particle.y * height * 0.16 * point.scale
-      const alpha = clamp(particle.life / particle.maxLife, 0, 1)
+  private buildLaneGuide(): void {
+    this.laneGuide = new THREE.Mesh(
+      new THREE.PlaneGeometry(LANE_WIDTH, 22),
+      new THREE.MeshBasicMaterial({ color: COLORS.lime, transparent: true, opacity: 0.09, depthWrite: false }),
+    )
+    this.laneGuide.rotation.x = -Math.PI / 2
+    this.laneGuide.position.set(0, 0.02, 9)
+    this.scene.add(this.laneGuide)
 
-      ctx.save()
-      ctx.globalAlpha = alpha
-      if (particle.kind === 'spark' || particle.kind === 'dash') {
-        ctx.globalCompositeOperation = 'lighter'
-        ctx.shadowColor = particle.color
-        ctx.shadowBlur = 8 * point.scale
+    const labels = ['L', 'C', 'R']
+    for (let i = 0; i < LANE_X.length; i += 1) {
+      const label = makeTextSprite(labels[i], '#ffffff', 0.28)
+      label.position.set(toWorldX(LANE_X[i]), 0.35, 1.2)
+      this.laneLabels.push(label)
+      this.scene.add(label)
+    }
+  }
+
+  private syncLaneGuide(world: GameWorld): void {
+    if (!this.laneGuide) return
+    this.laneGuide.position.x = toWorldX(LANE_X[world.player.lane])
+    const material = this.laneGuide.material as THREE.MeshBasicMaterial
+    material.color.set(world.status === 'overrun' ? '#ff5a4f' : COLORS.lime)
+    material.opacity = 0.08 + Math.sin(this.elapsed * 2.4) * 0.012
+  }
+
+  private syncZombies(world: GameWorld): void {
+    const seen = new Set<number>()
+    for (const zombie of world.zombies) {
+      seen.add(zombie.id)
+      let mesh = this.zombieMeshes.get(zombie.id)
+      if (!mesh) {
+        const colors = ZOMBIE_COLORS[zombie.variant]
+        mesh = new THREE.Group()
+        const sprite = makeBillboard(this.zombieWalk[0], 1.15, 1.7)
+        sprite.position.y = 0
+        mesh.add(sprite)
+        const fallback = makeHumanoid(colors.body, colors.skin, zombie.scale, false)
+        fallback.visible = false
+        mesh.add(fallback)
+        mesh.userData.sprite = sprite
+        mesh.userData.fallback = fallback
+        mesh.userData.frame = -1
+        this.zombieMeshes.set(zombie.id, mesh)
+        this.scene.add(mesh)
       }
-      ctx.fillStyle = particle.color
-      ctx.beginPath()
-      ctx.arc(point.x, screenY, radius, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.restore()
+
+      mesh.position.set(toWorldX(zombie.x), 0, zombie.z)
+      mesh.scale.setScalar(zombie.scale)
+      mesh.rotation.y = 0
+
+      const sprite = mesh.userData.sprite as THREE.Sprite
+      const fallback = mesh.userData.fallback as THREE.Group
+      const frames = zombie.isBoss ? this.zombieAttack : zombie.hp <= 0 ? this.zombieDeath : this.zombieWalk
+      const frameIndex = Math.floor(zombie.walkPhase * 2.2) % frames.length
+      const texture = frames[frameIndex]
+      const spriteReady = Boolean(texture.image)
+      sprite.visible = spriteReady
+      fallback.visible = !spriteReady
+
+      if (spriteReady && mesh.userData.frame !== frameIndex) {
+        const material = sprite.material as THREE.SpriteMaterial
+        material.map = texture
+        material.needsUpdate = true
+        mesh.userData.frame = frameIndex
+      }
+
+      const stride = Math.sin(zombie.walkPhase)
+      if (!spriteReady) {
+        const leftArm = fallback.userData.leftArm as THREE.Mesh
+        const rightArm = fallback.userData.rightArm as THREE.Mesh
+        const leftLeg = fallback.userData.leftLeg as THREE.Mesh
+        const rightLeg = fallback.userData.rightLeg as THREE.Mesh
+        leftArm.rotation.x = -0.65 + stride * 0.28
+        rightArm.rotation.x = -0.65 - stride * 0.28
+        leftLeg.rotation.x = stride * 0.42
+        rightLeg.rotation.x = -stride * 0.42
+      }
+      mesh.position.y = Math.abs(Math.cos(zombie.walkPhase)) * 0.035
+
+      if (zombie.hp < zombie.maxHp) {
+        const bar = this.getZombieHealthBar(mesh)
+        bar.visible = true
+        bar.scale.x = clamp(zombie.hp / zombie.maxHp, 0, 1)
+      } else {
+        const bar = this.getZombieHealthBar(mesh)
+        bar.visible = false
+      }
+    }
+
+    for (const [id, mesh] of this.zombieMeshes) {
+      if (!seen.has(id)) {
+        this.scene.remove(mesh)
+        this.disposeObject(mesh)
+        this.zombieMeshes.delete(id)
+      }
     }
   }
 
-  private drawFloatingTexts(world: GameWorld): void {
-    const { ctx, height } = this
+  private getZombieHealthBar(mesh: THREE.Group): THREE.Mesh {
+    let bar = mesh.children.find((child) => child.name === 'zombie-hp-bar') as THREE.Mesh | undefined
+    if (!bar) {
+      bar = new THREE.Mesh(
+        new THREE.BoxGeometry(0.55, 0.06, 0.03),
+        new THREE.MeshBasicMaterial({ color: COLORS.lime }),
+      )
+      bar.name = 'zombie-hp-bar'
+      bar.position.set(0, 2.05, 0)
+      mesh.add(bar)
+    }
+    return bar
+  }
+
+  private syncGates(world: GameWorld): void {
+    const seen = new Set<number>()
+    for (const gate of world.barrels) {
+      seen.add(gate.id)
+      let mesh = this.gateMeshes.get(gate.id)
+      if (!mesh) {
+        mesh = this.createGateMesh(gate)
+        this.gateMeshes.set(gate.id, mesh)
+        this.scene.add(mesh)
+      }
+      this.updateGateMesh(mesh, gate)
+    }
+
+    for (const [id, mesh] of this.gateMeshes) {
+      if (!seen.has(id)) {
+        this.scene.remove(mesh)
+        this.disposeObject(mesh)
+        this.gateMeshes.delete(id)
+      }
+    }
+  }
+
+  private createGateMesh(gate: Barrel): THREE.Group {
+    const group = new THREE.Group()
+    const color =
+      gate.kind === 'soldiers'
+        ? '#39d353'
+        : gate.kind === 'minus'
+          ? '#e5484d'
+          : gate.kind === 'weapon'
+            ? '#3b82f6'
+            : gate.kind === 'heal'
+              ? '#84cc16'
+              : '#f59e0b'
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(1.45, 2.25, 0.14),
+      new THREE.MeshLambertMaterial({
+        color,
+        transparent: true,
+        opacity: 0.72,
+        emissive: new THREE.Color(color),
+        emissiveIntensity: 0.12,
+      }),
+    )
+    panel.position.y = 1.15
+    group.add(panel)
+
+    const labelText =
+      gate.kind === 'soldiers'
+        ? `+${gate.value}`
+        : gate.kind === 'minus'
+          ? `-${gate.value}`
+          : gate.kind === 'weapon'
+            ? 'GUN+1'
+            : gate.kind === 'heal'
+              ? `+${gate.value}`
+              : `x${gate.multiplier}`
+    const label = makeTextSprite(labelText, gate.kind === 'minus' ? '#ffd7d7' : '#ffffff', 0.78)
+    label.position.set(0, 1.38, 0.18)
+    group.add(label)
+
+    const bar = new THREE.Mesh(
+      new THREE.BoxGeometry(1.1, 0.09, 0.04),
+      new THREE.MeshBasicMaterial({ color: COLORS.gold }),
+    )
+    bar.position.set(0, 2.45, 0.05)
+    bar.name = 'gate-hp-bar'
+    group.add(bar)
+    return group
+  }
+
+  private updateGateMesh(mesh: THREE.Group, gate: Barrel): void {
+    mesh.position.set(toWorldX(gate.x), 0, gate.z)
+    const targetScale = gate.hitFlash > 0 ? 1.06 : 1
+    mesh.scale.setScalar(targetScale)
+    const bar = mesh.children.find((child) => child.name === 'gate-hp-bar') as THREE.Mesh | undefined
+    if (bar) bar.scale.x = clamp(gate.hp / gate.maxHp, 0, 1)
+  }
+
+  private syncPlayer(world: GameWorld): void {
+    const player = world.player
+    const groupRoot = this.scene.getObjectByName('player-squad') as THREE.Group | undefined
+    const squad = groupRoot ?? new THREE.Group()
+    squad.name = 'player-squad'
+    if (!groupRoot) this.scene.add(squad)
+
+    const shake = player.grabTimer > 0 ? Math.sin(world.time * 42) * 0.035 : 0
+    squad.position.set(toWorldX(player.x) + shake, 0, 0)
+    squad.rotation.y = player.facing > 0 ? 0.08 : -0.08
+
+    const offsets: Array<[number, number]> = [[0, 0]]
+
+    const desired = 1
+    while (squad.children.length > desired) {
+      const child = squad.children.pop()
+      if (child) this.disposeObject(child)
+    }
+
+    for (let i = 0; i < desired; i += 1) {
+      let member = squad.children[i] as THREE.Group | undefined
+      if (!member) {
+        member = new THREE.Group()
+        const texture = i === 0 ? this.heroAim : i % 3 === 1 ? this.heroBackLeft : i % 3 === 2 ? this.heroBackRight : this.heroBack
+        const sprite = makeBillboard(texture, 0.95, 1.55)
+        sprite.position.y = 0
+        member.add(sprite)
+        member.userData.sprite = sprite
+        squad.add(member)
+      }
+
+      member.position.set(offsets[i][0], 0, offsets[i][1])
+      member.rotation.y = 0
+      const sprite = member.userData.sprite as THREE.Sprite
+      const material = sprite.material as THREE.SpriteMaterial
+      const laneX = LANE_X[player.lane]
+      const moving = Math.abs(player.x - laneX) > 0.015
+      const walkFrame = Math.floor(world.time * 8 + i * 0.35) % 8
+      let texture = this.heroBack
+      if (moving) {
+        texture = player.facing >= 0 ? this.heroWalkRight[walkFrame] : this.heroWalkLeft[walkFrame]
+      } else if (i === 0) {
+        texture = player.muzzleFlash > 0 || player.bulletMultiplier > 1 ? this.heroFire : this.heroFire
+      } else if (i % 3 === 1) {
+        texture = this.heroBackLeft
+      } else if (i % 3 === 2) {
+        texture = this.heroBackRight
+      }
+      if (material.map !== texture) {
+        material.map = texture
+        material.needsUpdate = true
+      }
+      sprite.visible = Boolean(texture.image)
+      sprite.position.y = Math.abs(Math.sin(world.time * 8 + i * 0.9)) * 0.025
+    }
+
+    let muzzle = squad.userData.muzzle as THREE.Sprite | undefined
+    if (!muzzle) {
+      muzzle = makeBillboard(this.muzzleTexture, 0.75, 0.42)
+      muzzle.position.set(0.3, 1.32, 0.9)
+      squad.add(muzzle)
+      squad.userData.muzzle = muzzle
+    }
+    muzzle.visible = player.muzzleFlash > 0
+    muzzle.scale.setScalar(player.muzzleFlash > 0 ? 0.8 + player.muzzleFlash * 4 : 1)
+
+    if (world.status === 'overrun') squad.rotation.x = 0.35
+    else squad.rotation.x = 0
+  }
+
+  private syncTracers(world: GameWorld): void {
+    while (this.projectilePool.length < world.tracers.length) {
+      const projectile = new THREE.Group()
+      const outerGeometry = new THREE.CapsuleGeometry(0.075, 0.5, 3, 8)
+      outerGeometry.rotateX(Math.PI / 2)
+      const outer = new THREE.Mesh(
+        outerGeometry,
+        new THREE.MeshBasicMaterial({
+          color: '#ff9f1c',
+          transparent: true,
+          opacity: 0.65,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      )
+      const coreGeometry = new THREE.CapsuleGeometry(0.035, 0.38, 3, 8)
+      coreGeometry.rotateX(Math.PI / 2)
+      const core = new THREE.Mesh(
+        coreGeometry,
+        new THREE.MeshBasicMaterial({
+          color: '#fff7d1',
+          transparent: true,
+          opacity: 1,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      )
+      const trailGeometry = new THREE.BufferGeometry()
+      trailGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3))
+      const trail = new THREE.Line(
+        trailGeometry,
+        new THREE.LineBasicMaterial({
+          color: '#ff9f1c',
+          transparent: true,
+          opacity: 0.55,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      )
+      projectile.add(outer, core, trail)
+      projectile.frustumCulled = false
+      this.projectilePool.push(projectile)
+      this.scene.add(projectile)
+    }
+
+    for (let i = 0; i < this.projectilePool.length; i += 1) {
+      const projectile = this.projectilePool[i]
+      const tracer = world.tracers[i]
+      if (!tracer) {
+        projectile.visible = false
+        continue
+      }
+
+      projectile.visible = true
+      const position = new THREE.Vector3(toWorldX(tracer.x), 1.3, tracer.z)
+      const target = new THREE.Vector3(toWorldX(tracer.targetX), 1.35, tracer.targetZ)
+      projectile.position.copy(position)
+      projectile.lookAt(target)
+
+      const outerMaterial = projectile.children[0].material as THREE.MeshBasicMaterial
+      const coreMaterial = projectile.children[1].material as THREE.MeshBasicMaterial
+      const trailMaterial = (projectile.children[2] as THREE.Line).material as THREE.LineBasicMaterial
+      const warm = tracer.crit ? COLORS.gold : '#ffed9e'
+      outerMaterial.color.set(warm)
+      coreMaterial.color.set('#fff7d1')
+      trailMaterial.color.set(warm)
+
+      const fade = 0.55 + clamp(tracer.life / tracer.maxLife, 0, 1) * 0.45
+      outerMaterial.opacity = fade * 0.65
+      coreMaterial.opacity = fade
+      trailMaterial.opacity = fade * 0.55
+
+      const trail = projectile.children[2] as THREE.Line
+      const positions = trail.geometry.getAttribute('position') as THREE.BufferAttribute
+      positions.setXYZ(0, 0, 0, -0.72)
+      positions.setXYZ(1, 0, 0, -0.02)
+      positions.needsUpdate = true
+    }
+  }
+
+  private syncParticles(world: GameWorld): void {
+    if (!this.particlePoints) {
+      const geometry = new THREE.BufferGeometry()
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(GAME.world.maxParticles * 3), 3))
+      geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(GAME.world.maxParticles * 3), 3))
+      this.particleGeometry = geometry
+      this.particlePoints = new THREE.Points(
+        geometry,
+        new THREE.PointsMaterial({
+          size: 0.18,
+          vertexColors: true,
+          transparent: true,
+          opacity: 0.95,
+          blending: THREE.AdditiveBlending,
+        }),
+      )
+      this.particlePoints.frustumCulled = false
+      this.scene.add(this.particlePoints)
+    }
+
+    if (!this.particleGeometry) return
+    const positions = this.particleGeometry.getAttribute('position') as THREE.BufferAttribute
+    const colors = this.particleGeometry.getAttribute('color') as THREE.BufferAttribute
+    const count = Math.min(GAME.world.maxParticles, world.particles.length)
+    for (let i = 0; i < count; i += 1) {
+      const particle = world.particles[i]
+      positions.setXYZ(i, toWorldX(particle.x), particle.y, particle.z)
+      this.tempColor.set(particle.color)
+      const fade = clamp(particle.life / particle.maxLife, 0, 1)
+      colors.setXYZ(i, this.tempColor.r * fade, this.tempColor.g * fade, this.tempColor.b * fade)
+    }
+    for (let i = count; i < GAME.world.maxParticles; i += 1) {
+      positions.setXYZ(i, 0, -100, 0)
+      colors.setXYZ(i, 0, 0, 0)
+    }
+    positions.needsUpdate = true
+    colors.needsUpdate = true
+  }
+
+  private syncFloatingTexts(world: GameWorld): void {
+    if (!this.textGroup) {
+      this.textGroup = new THREE.Group()
+      this.scene.add(this.textGroup)
+    }
+    for (const child of [...this.textGroup.children]) {
+      this.textGroup.remove(child)
+      this.disposeObject(child)
+    }
+
     for (const text of world.texts) {
-      const point = this.project(text.x, text.z)
-      const size = Math.max(11, 22 * point.scale)
-      const y = point.y - text.y * height * 0.16 * point.scale
-      const alpha = clamp(text.life / text.maxLife, 0, 1)
-
-      ctx.save()
-      ctx.globalAlpha = alpha
-      ctx.font = `900 ${size}px "Arial Black", Impact, sans-serif`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.lineWidth = Math.max(2, size * 0.2)
-      ctx.strokeStyle = 'rgba(10, 20, 22, 0.8)'
-      ctx.strokeText(text.text, point.x, y)
-      ctx.fillStyle = text.color
-      ctx.fillText(text.text, point.x, y)
-      ctx.restore()
+      const sprite = makeTextSprite(text.text, text.color, 0.5)
+      const point = new THREE.Vector3(toWorldX(text.x), text.y, text.z)
+      sprite.position.copy(point)
+      const material = sprite.material as THREE.SpriteMaterial
+      material.opacity = clamp(text.life / text.maxLife, 0, 1)
+      this.textGroup.add(sprite)
     }
   }
 
-  private drawAimTarget(world: GameWorld): void {
+  private syncAimTarget(world: GameWorld): void {
+    if (!this.aimRing) {
+      this.aimRing = new THREE.Mesh(
+        new THREE.TorusGeometry(0.42, 0.035, 8, 24),
+        new THREE.MeshBasicMaterial({ color: COLORS.lime, transparent: true, opacity: 0.95 }),
+      )
+      this.aimRing.rotation.x = Math.PI / 2
+      this.scene.add(this.aimRing)
+    }
+
     const target = world.aimTarget
-    if (!target) return
-
-    let point: ProjectedPoint
-    let centerY: number
-    let size: number
-    let color: string
-
-    if (target.kind === 'zombie') {
-      const zombie = target.zombie
-      if (zombie.hp <= 0) return
-      point = this.project(zombie.x, zombie.z)
-      const verticalOffset = zombie.state === 'grabbing' ? 0.27 : 0.14
-      centerY = point.y - this.height * verticalOffset * point.scale
-      size = clamp(48 * point.scale, 18, 56)
-      color = COLORS.lime
-    } else {
-      const barrel = target.barrel
-      if (barrel.hp <= 0) return
-      point = this.project(barrel.x, barrel.z)
-      centerY = point.y - this.height * 0.085 * point.scale
-      size = clamp(58 * point.scale, 24, 66)
-      color = COLORS.orange
+    if (!target) {
+      this.aimRing.visible = false
+      return
     }
 
-    const pulse = 1 + Math.sin(this.elapsed * 8) * 0.06
-    const scaled = size * pulse
-    const half = scaled / 2
-    const arm = scaled * 0.3
-    const { ctx } = this
-
-    ctx.save()
-    ctx.strokeStyle = color
-    ctx.shadowColor = color
-    ctx.shadowBlur = 8
-    ctx.lineWidth = Math.max(1.6, 2.4 * point.scale)
-    ctx.lineCap = 'round'
-
-    const corners: Array<[number, number, number, number]> = [
-      [point.x - half, centerY - half, 1, 1],
-      [point.x + half, centerY - half, -1, 1],
-      [point.x - half, centerY + half, 1, -1],
-      [point.x + half, centerY + half, -1, -1],
-    ]
-
-    for (const [x, y, dx, dy] of corners) {
-      ctx.beginPath()
-      ctx.moveTo(x + dx * arm, y)
-      ctx.lineTo(x, y)
-      ctx.lineTo(x, y + dy * arm)
-      ctx.stroke()
-    }
-
-    ctx.fillStyle = color
-    ctx.beginPath()
-    ctx.arc(point.x, centerY, Math.max(1.4, 2 * point.scale), 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
+    this.aimRing.visible = true
+    const x = target.kind === 'zombie' ? target.zombie.x : target.barrel.x
+    const z = target.kind === 'zombie' ? target.zombie.z : target.barrel.z
+    this.aimRing.position.set(toWorldX(x), 0.08, z)
+    const material = this.aimRing.material as THREE.MeshBasicMaterial
+    material.color.set(target.kind === 'barrel' ? COLORS.orange : COLORS.lime)
   }
 
-  private drawDashStreaks(x: number, y: number): void {
-    const { ctx } = this
-    ctx.save()
-    ctx.globalCompositeOperation = 'lighter'
-    ctx.strokeStyle = 'rgba(93, 228, 238, 0.65)'
-    ctx.lineCap = 'round'
-    for (let i = 0; i < 8; i += 1) {
-      const angle = (i / 8) * Math.PI * 2 + this.elapsed
-      const inner = this.height * 0.11
-      const outer = this.height * (0.2 + (i % 3) * 0.03)
-      ctx.lineWidth = i % 2 === 0 ? 2.2 : 1.2
-      ctx.beginPath()
-      ctx.moveTo(x + Math.cos(angle) * inner, y + Math.sin(angle) * inner)
-      ctx.lineTo(x + Math.cos(angle) * outer, y + Math.sin(angle) * outer)
-      ctx.stroke()
-    }
-    ctx.restore()
-  }
-
-  private drawScreenEffects(world: GameWorld): void {
-    const { ctx, width, height } = this
-
-    const vignette = ctx.createRadialGradient(
-      width * 0.5,
-      height * 0.53,
-      height * 0.22,
-      width * 0.5,
-      height * 0.53,
-      height * 0.78,
-    )
-    vignette.addColorStop(0, 'rgba(2, 12, 16, 0)')
-    vignette.addColorStop(0.72, 'rgba(2, 12, 16, 0.08)')
-    vignette.addColorStop(1, 'rgba(2, 12, 16, 0.52)')
-    ctx.fillStyle = vignette
-    ctx.fillRect(0, 0, width, height)
-
-    const topShade = ctx.createLinearGradient(0, 0, 0, height * 0.2)
-    topShade.addColorStop(0, 'rgba(2, 13, 18, 0.55)')
-    topShade.addColorStop(1, 'rgba(2, 13, 18, 0)')
-    ctx.fillStyle = topShade
-    ctx.fillRect(0, 0, width, height * 0.22)
-
-    const bottomShade = ctx.createLinearGradient(0, height * 0.8, 0, height)
-    bottomShade.addColorStop(0, 'rgba(2, 13, 18, 0)')
-    bottomShade.addColorStop(1, 'rgba(2, 13, 18, 0.42)')
-    ctx.fillStyle = bottomShade
-    ctx.fillRect(0, height * 0.8, width, height * 0.2)
-
-    const lowHealth = clamp(1 - world.player.hp / GAME.player.maxHp, 0, 1)
-    const grabPulse =
-      world.player.grabTimer > 0
-        ? 0.2 + (Math.sin(this.elapsed * 18) * 0.5 + 0.5) * 0.16
-        : 0
-    const hurtAlpha = Math.max(
-      world.hurtFlash * 0.65,
-      grabPulse,
-      lowHealth > 0.68
-        ? (0.08 + Math.sin(this.elapsed * 5) * 0.025) * (lowHealth - 0.68) * 3
-        : 0,
-    )
-
-    if (hurtAlpha > 0.001) {
-      const hurt = ctx.createRadialGradient(
-        width * 0.5,
-        height * 0.52,
-        height * 0.24,
-        width * 0.5,
-        height * 0.52,
-        height * 0.76,
-      )
-      hurt.addColorStop(0, 'rgba(168, 24, 36, 0)')
-      hurt.addColorStop(0.65, `rgba(168, 24, 36, ${hurtAlpha * 0.2})`)
-      hurt.addColorStop(1, `rgba(168, 24, 36, ${hurtAlpha})`)
-      ctx.fillStyle = hurt
-      ctx.fillRect(0, 0, width, height)
-    }
-
-    if (world.status === 'overrun') {
-      const progress = clamp(
-        1 - world.overrunTimer / GAME.contact.overrunDuration,
-        0,
-        1,
-      )
-      const red = ctx.createRadialGradient(
-        width * 0.5,
-        height * 0.56,
-        height * 0.08,
-        width * 0.5,
-        height * 0.56,
-        height * 0.72,
-      )
-      red.addColorStop(0, `rgba(92, 4, 12, ${0.22 + progress * 0.28})`)
-      red.addColorStop(0.55, `rgba(46, 2, 8, ${0.3 + progress * 0.25})`)
-      red.addColorStop(1, `rgba(3, 0, 2, ${0.45 + progress * 0.3})`)
-      ctx.fillStyle = red
-      ctx.fillRect(0, 0, width, height)
-
-      ctx.fillStyle = `rgba(2, 0, 1, ${progress * progress * 0.45})`
-      ctx.fillRect(0, 0, width, height)
-    }
+  private disposeObject(object: THREE.Object3D): void {
+    object.traverse((child) => {
+      const mesh = child as THREE.Mesh
+      mesh.geometry?.dispose()
+      const material = (mesh as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
+      if (Array.isArray(material)) {
+        for (const item of material) item.dispose()
+      } else {
+        material?.dispose()
+      }
+      const texture = (child as THREE.Sprite).userData.texture as THREE.CanvasTexture | undefined
+      texture?.dispose()
+    })
   }
 }

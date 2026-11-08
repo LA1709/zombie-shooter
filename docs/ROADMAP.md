@@ -41,10 +41,12 @@ The plan is intentionally sequenced so each phase adds **one new source of fun**
 
 **Delivered in the current slice**
 
-- Destructible supply caches with large color-coded HP labels
-- Alignment-based auto-targeting: line up with a cache to spend fire on it; otherwise the closest zombie wins
-- Cache destruction: blast damage, score, and one of medkit / overdrive / score
-- Contact grab: zombies lunge, slow the player, deal damage; dash breaks grabs
+- Three explicit lanes with dividers, chevrons, L/C/R markers, and a current-lane guide
+- Same-lane shooting: the player only fires down the selected lane
+- Large destructible shooter gates with readable squad/gun/heal/multiplier choices
+- Lane-locked gates block same-lane shots and stop zombies behind them until destroyed; gate destruction applies the chosen effect
+- Lane-locked zombies; red-shirt zombies are the subset that can switch lanes toward the player
+- Zombie breaches: enemies reaching the home line crash through and subtract life
 - Overrun sequence: at 0 HP the player is swarmed, then the run ends
 - HUD grab warning and overdrive timer
 
@@ -60,7 +62,7 @@ The plan is intentionally sequenced so each phase adds **one new source of fun**
 
 - Waves without caches feel noticeably less interesting
 - Player can explain when to shoot a cache vs. a zombie
-- Player understands why a cache is not being shot when not aligned
+- Player understands that shots only go down the current lane and that a cache blocks only its own lane
 - Grab and overrun are readable on a 390 px-wide screen
 - Upgrade choices create at least two distinct run builds
 - No unwinnable cache placement; spawn logic validates lanes
@@ -126,14 +128,13 @@ The plan is intentionally sequenced so each phase adds **one new source of fun**
 1. **Readability over realism.** A close zombie must never be confused with the player. Grabs need a clear silhouette, grab warning, and escape cue. Keep outlines and contrast.
 2. **Mobile ergonomics.** Thumb reach, safe areas, 44 px minimum touch targets, no scroll traps.
 3. **Data-driven tuning.** Keep balance in `src/game/config.ts`; move to JSON/remote config only when live tuning is needed.
-4. **Renderer boundary.** Simulation stays framework-agnostic. If 3D becomes necessary, replace `Renderer` and `SpriteBank`, not `GameWorld`.
+4. **Renderer boundary.** Simulation stays framework-agnostic. Three.js owns presentation only; `GameWorld` remains the source of truth.
 5. **Ship small.** Every phase should end with a playable build and a short playtest note.
 
 ## Suggested next tasks after this slice
 
-1. Playtest the new grab/overrun and cache loop on a real phone.
-2. Add tap-to-focus targeting if alignment-only targeting feels opaque.
-3. Add the 3-choice upgrade screen on wave clear.
-4. Add runner/brute variants and lane-blocking barricades if they improve decisions.
-5. Tune waves 2–5 around the new decisions.
-6. Add the first boss after the cache/contact loop is stable.
+1. Playtest the Three.js squad/gate slice on a real phone.
+2. Tune gate values, squad growth, gun upgrades, and boss pressure.
+3. Tune lane-switcher frequency and wave pressure so locked lanes do not become harmless.
+4. Improve character, boss, and gate art direction.
+5. Add movement animation and richer impactFX.

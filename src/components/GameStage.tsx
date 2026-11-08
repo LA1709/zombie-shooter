@@ -59,7 +59,6 @@ export function GameStage() {
   const start = useCallback(() => engine?.start(), [engine])
   const pause = useCallback(() => engine?.togglePause(), [engine])
   const mute = useCallback(() => engine?.toggleMute(), [engine])
-  const dash = useCallback(() => engine?.requestDash(), [engine])
 
   return (
     <main className="app">
@@ -79,7 +78,6 @@ export function GameStage() {
               snapshot={snapshot}
               onPause={pause}
               onMute={mute}
-              onDash={dash}
             />
           )}
 

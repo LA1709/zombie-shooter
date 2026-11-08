@@ -92,10 +92,6 @@ export class GameEngine {
     this.refreshSnapshot()
   }
 
-  requestDash(): void {
-    if (this.world.status === 'playing') this.input.queueDash()
-  }
-
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
@@ -130,7 +126,7 @@ export class GameEngine {
       ) {
         if (!controls) controls = this.input.consumeControls()
         this.world.update(GAME.fixedStep, controls)
-        controls = { ...controls, dashPressed: false }
+        controls = { ...controls, laneShift: 0 }
         this.accumulator -= GAME.fixedStep
         steps += 1
       }
@@ -140,9 +136,8 @@ export class GameEngine {
       }
     } else if (this.world.status === 'overrun') {
       this.world.update(delta, {
-        moveAxis: 0,
-        pointerX: null,
-        dashPressed: false,
+        laneShift: 0,
+        targetLane: null,
       })
       this.flushWorldEvents()
     }

@@ -1,4 +1,3 @@
-import type { CSSProperties } from 'react'
 import { GAME } from '../game/config'
 import type { GameSnapshot } from '../game/types'
 import { formatScore } from '../game/math'
@@ -14,10 +13,9 @@ interface HudProps {
   snapshot: GameSnapshot
   onPause: () => void
   onMute: () => void
-  onDash: () => void
 }
 
-export function Hud({ snapshot, onPause, onMute, onDash }: HudProps) {
+export function Hud({ snapshot, onPause, onMute }: HudProps) {
   const hpPercent = (snapshot.hp / snapshot.maxHp) * 100
   const healthTone =
     hpPercent <= 30 ? 'is-danger' : hpPercent <= 60 ? 'is-warning' : ''
@@ -25,14 +23,6 @@ export function Hud({ snapshot, onPause, onMute, onDash }: HudProps) {
     snapshot.enemiesTotal > 0
       ? 1 - snapshot.enemiesRemaining / snapshot.enemiesTotal
       : 0
-  const cooldownSeconds = Math.ceil(
-    (1 - snapshot.dashProgress) * GAME.player.dashCooldown,
-  )
-  const dashRing = `conic-gradient(${
-    snapshot.dashReady ? 'var(--lime)' : 'var(--cyan)'
-  } ${snapshot.dashProgress * 360}deg, rgba(221, 255, 244, 0.12) 0deg)`
-  const dashStyle: CSSProperties = { background: dashRing }
-
   return (
     <div className="hud">
       <div className="hud__top">
@@ -57,6 +47,9 @@ export function Hud({ snapshot, onPause, onMute, onDash }: HudProps) {
             {snapshot.enemiesRemaining > 0
               ? `${snapshot.enemiesRemaining} LEFT`
               : 'CLEAR'}
+          </span>
+          <span className="wave-chip__loadout">
+            GUN {snapshot.weaponLevel}
           </span>
           <div className="wave-chip__track">
             <div
@@ -122,9 +115,7 @@ export function Hud({ snapshot, onPause, onMute, onDash }: HudProps) {
         <div className="grab-warning" role="alert">
           <BoltIcon size={14} />
           <span>GRABBED</span>
-          <small>
-            {snapshot.dashReady ? 'DASH TO BREAK FREE' : 'DASH RECHARGING'}
-          </small>
+          <small>SWITCH LANE</small>
           <i
             className="grab-warning__timer"
             style={{
@@ -144,24 +135,13 @@ export function Hud({ snapshot, onPause, onMute, onDash }: HudProps) {
           <span className="hud__hint-divider">/</span>
           <span>DRAG</span>
           <span className="hud__hint-divider">·</span>
-          <span>AUTO-FIRE</span>
+          <span>SWITCH LANES</span>
         </div>
 
-        <button
-          type="button"
-          className={`dash-button ${snapshot.dashReady ? 'is-ready' : ''}`}
-          style={dashStyle}
-          onClick={onDash}
-          aria-label={snapshot.dashReady ? 'Dash' : `Dash recharging, ${cooldownSeconds} seconds`}
-        >
-          <span className="dash-button__inner">
-            <BoltIcon size={17} />
-            <strong>
-              {snapshot.dashReady ? 'DASH' : `${cooldownSeconds}s`}
-            </strong>
-            <small>BOOST</small>
-          </span>
-        </button>
+        <div className="powerups" aria-label="Power ups">
+          <strong>GUN {snapshot.weaponLevel}</strong>
+          {snapshot.bulletMultiplier > 1 && <em>×{snapshot.bulletMultiplier} BULLET</em>}
+        </div>
       </div>
     </div>
   )

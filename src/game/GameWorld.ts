@@ -1,11 +1,11 @@
-import { GAME, COLORS } from './config'
-import type { GameStatus, ZombieVariant } from './config'
+import { GAME, COLORS, LANE_X } from './config'
+import type { GameStatus, LaneIndex, ZombieVariant } from './config'
 import type {
   AimTarget,
   Banner,
   Barrel,
-  BarrelReward,
   Controls,
+  GateKind,
   FloatingText,
   GameSnapshot,
   Particle,
@@ -25,16 +25,23 @@ import {
 function createPlayer(): Player {
   return {
     x: 0,
+    lane: 1,
+    squadCount: 1,
+    weaponLevel: GAME.player.startWeaponLevel,
+    weaponDamage: GAME.player.damage,
+    weaponFireRate: 1,
     hp: GAME.player.maxHp,
     facing: 1,
     fireTimer: 0,
     dashTimer: 0,
     dashCooldown: 0,
     dashDirection: 1,
-    invulnerability: 0,
+    invulnerability: 1.2,
     muzzleFlash: 0,
     grabTimer: 0,
     overdriveTimer: 0,
+    bulletMultiplier: 1,
+    bulletMultiplierTimer: 0,
   }
 }
 
@@ -126,6 +133,9 @@ export class GameWorld {
       kills: this.kills,
       hp: Math.max(0, Math.ceil(this.player.hp)),
       maxHp: GAME.player.maxHp,
+      squadCount: this.player.squadCount,
+      weaponLevel: this.player.weaponLevel,
+      weaponDamage: this.player.weaponDamage,
       combo: this.combo,
       multiplier: this.multiplier,
       dashReady: this.player.dashCooldown <= 0,
@@ -134,9 +144,12 @@ export class GameWorld {
         0,
         1,
       ),
+      lane: this.player.lane,
       grabbed: this.player.grabTimer > 0,
       grabTime: this.player.grabTimer,
       overdrive: this.player.overdriveTimer,
+      bulletMultiplier: this.player.bulletMultiplier,
+      bulletMultiplierTime: this.player.bulletMultiplierTimer,
       enemiesRemaining: this.waveRemaining + this.zombies.length,
       enemiesTotal: this.waveTotal,
       banner:
@@ -172,6 +185,7 @@ export class GameWorld {
 
     this.updateSpawning(dt)
     this.updateZombies(dt)
+    this.updateProjectiles(dt)
 
     if (this.status !== 'playing') return
 
@@ -224,11 +238,39 @@ export class GameWorld {
     )
     this.events.push({ type: 'wave' })
 
+    this.spawnBarrelsForWave()
+
     for (let i = 0; i < vanguardCount; i += 1) {
-      this.spawnZombie(randomBetween(6, 14))
+      this.spawnZombie(randomBetween(10, 18))
     }
 
-    this.spawnBarrelsForWave()
+    if (this.wave % 5 === 0) {
+      const boss: Zombie = {
+        id: this.nextZombieId++,
+        x: 0,
+        lane: 1,
+        canSwitchLane: false,
+        laneSwitchTimer: 0,
+        z: 18,
+        hp: this.waveConfig.hp * 9,
+        maxHp: this.waveConfig.hp * 9,
+        speed: this.waveConfig.speed * 0.72,
+        damage: this.waveConfig.damage * 2,
+        variant: 2,
+        scale: 2.7,
+        seed: Math.random() * 1000,
+        walkPhase: 0,
+        attackCooldown: 1.2,
+        hitFlash: 0,
+        targetOffset: 0,
+        state: 'walking',
+        grabTimer: 0,
+        isBoss: true,
+      }
+      this.zombies.push(boss)
+      this.setBanner('WARNING', 'GIANT INBOUND')
+      this.spawnDust(0, 18)
+    }
   }
 
   private setBanner(title: string, subtitle: string): void {
@@ -261,13 +303,38 @@ export class GameWorld {
   private spawnZombie(zOverride?: number): void {
     const config = this.waveConfig
     const variant = randomInt(0, 3) as ZombieVariant
+    const lane = randomInt(0, 2) as LaneIndex
+    const canSwitchLane = variant === 2
     const hp = Math.round(config.hp * randomBetween(0.88, 1.12))
+    let z =
+      zOverride ??
+      GAME.world.spawnDepth + randomBetween(0, GAME.world.spawnDepthJitter)
+
+    const blockingBarrel = this.barrels.find(
+      (barrel) =>
+        barrel.hp > 0 &&
+        barrel.lane === lane &&
+        z < barrel.z + GAME.barrel.stopGap,
+    )
+    if (blockingBarrel) {
+      z =
+        blockingBarrel.z +
+        GAME.barrel.stopGap +
+        randomBetween(0.8, 2.4)
+    }
+
     const zombie: Zombie = {
       id: this.nextZombieId++,
-      x: randomBetween(-0.9, 0.9),
-      z:
-        zOverride ??
-        GAME.world.spawnDepth + randomBetween(0, GAME.world.spawnDepthJitter),
+      x: LANE_X[lane] + randomBetween(-0.035, 0.035),
+      lane,
+      canSwitchLane,
+      laneSwitchTimer: canSwitchLane
+        ? randomBetween(
+            GAME.world.zombieLaneSwitchIntervalMin,
+            GAME.world.zombieLaneSwitchIntervalMax,
+          )
+        : 0,
+      z,
       hp,
       maxHp: hp,
       speed: config.speed * randomBetween(0.9, 1.12),
@@ -276,14 +343,41 @@ export class GameWorld {
       scale: randomBetween(0.92, 1.08),
       seed: Math.random() * 1000,
       walkPhase: Math.random() * Math.PI * 2,
-      attackCooldown: randomBetween(0.2, 1.1),
+      attackCooldown: randomBetween(1.1, 2.0),
       hitFlash: 0,
-      targetOffset: randomBetween(-0.52, 0.52),
+      targetOffset: randomBetween(-0.035, 0.035),
       state: 'walking',
       grabTimer: 0,
     }
     this.zombies.push(zombie)
     if (zOverride !== undefined) this.spawnDust(zombie.x, zombie.z)
+  }
+
+  private shiftZombieLane(zombie: Zombie): void {
+    if (!zombie.canSwitchLane) return
+    if (zombie.lane < this.player.lane) {
+      zombie.lane = clamp(zombie.lane + 1, 0, 2) as LaneIndex
+    } else if (zombie.lane > this.player.lane) {
+      zombie.lane = clamp(zombie.lane - 1, 0, 2) as LaneIndex
+    }
+    zombie.laneSwitchTimer = randomBetween(
+      GAME.world.zombieLaneSwitchIntervalMin,
+      GAME.world.zombieLaneSwitchIntervalMax,
+    )
+    this.spawnDust(zombie.x, zombie.z)
+  }
+
+  private getBlockingBarrel(zombie: Zombie): Barrel | null {
+    let blockingBarrel: Barrel | null = null
+
+    for (const barrel of this.barrels) {
+      if (barrel.hp <= 0 || barrel.lane !== zombie.lane) continue
+      if (barrel.z < zombie.z && (!blockingBarrel || barrel.z > blockingBarrel.z)) {
+        blockingBarrel = barrel
+      }
+    }
+
+    return blockingBarrel
   }
 
   private updateZombies(dt: number): void {
@@ -292,110 +386,80 @@ export class GameWorld {
       zombie.hitFlash = Math.max(0, zombie.hitFlash - dt)
       zombie.walkPhase += zombie.speed * dt * 2.1
 
-      if (zombie.state === 'grabbing') {
-        zombie.grabTimer -= dt
-        zombie.z = moveToward(
-          zombie.z,
-          GAME.contact.grabDepth,
-          dt * 8,
-        )
-        const grabX = clamp(
-          this.player.x + zombie.targetOffset * 0.18,
-          -0.96,
-          0.96,
-        )
-        zombie.x = moveToward(zombie.x, grabX, dt * 2.6)
-
-        if (zombie.grabTimer <= 0) {
-          zombie.state = 'walking'
-          zombie.z = GAME.contact.grabDepth + 0.9
-          zombie.attackCooldown = randomBetween(1.05, 1.5)
-        }
-        continue
-      }
-
-      if (zombie.z > GAME.world.attackDepth) {
-        zombie.z = Math.max(
-          GAME.world.attackDepth,
-          zombie.z - zombie.speed * dt,
-        )
-
-        if (zombie.z < 10) {
-          const targetX = clamp(
-            this.player.x + zombie.targetOffset,
-            -0.96,
-            0.96,
+      const blockingBarrel = this.getBlockingBarrel(zombie)
+      const floorZ = blockingBarrel
+        ? Math.max(
+            GAME.world.attackDepth,
+            blockingBarrel.z + GAME.barrel.stopGap,
           )
-          zombie.x = moveToward(zombie.x, targetX, dt * 0.95)
+        : GAME.world.attackDepth
+
+      if (zombie.z > floorZ) {
+        zombie.z = Math.max(floorZ, zombie.z - zombie.speed * dt)
+
+        if (zombie.canSwitchLane) {
+          zombie.laneSwitchTimer -= dt
+          if (zombie.laneSwitchTimer <= 0) this.shiftZombieLane(zombie)
         }
+
+        const targetX = LANE_X[zombie.lane] + zombie.targetOffset
+        zombie.x = moveToward(zombie.x, targetX, dt * 1.45)
         continue
       }
 
-      const targetX = clamp(
-        this.player.x + zombie.targetOffset * 0.85,
-        -0.96,
-        0.96,
-      )
-      zombie.x = moveToward(zombie.x, targetX, dt * 0.65)
-      zombie.attackCooldown -= dt
+      if (blockingBarrel) {
+        zombie.z = floorZ
+        zombie.attackCooldown -= dt
+        if (zombie.attackCooldown <= 0) {
+          zombie.attackCooldown = randomBetween(0.75, 1.25)
+          this.spawnDust(blockingBarrel.x, blockingBarrel.z)
+        }
 
-      if (
-        zombie.attackCooldown <= 0 &&
-        Math.abs(zombie.x - this.player.x) < 0.46
-      ) {
-        this.startGrab(zombie)
+        if (zombie.canSwitchLane) {
+          zombie.laneSwitchTimer -= dt
+          if (zombie.laneSwitchTimer <= 0) this.shiftZombieLane(zombie)
+        }
+
+        const targetX = LANE_X[zombie.lane] + zombie.targetOffset
+        zombie.x = moveToward(zombie.x, targetX, dt * 1.6)
+        continue
+      }
+
+      const targetX = LANE_X[zombie.lane] + zombie.targetOffset
+      zombie.x = moveToward(zombie.x, targetX, dt * 1.25)
+      zombie.z = Math.max(0, zombie.z - zombie.speed * dt * 0.35)
+
+      if (zombie.z <= GAME.world.attackDepth) {
+        zombie.z = GAME.world.attackDepth
+        this.breachZombie(zombie)
         if (this.status !== 'playing') return
       }
     }
   }
 
-  private startGrab(zombie: Zombie): void {
-    zombie.state = 'grabbing'
-    zombie.grabTimer = GAME.contact.grabDuration
-    zombie.z = GAME.contact.grabDepth
-    zombie.x = clamp(
-      this.player.x + zombie.targetOffset * 0.18,
-      -0.96,
-      0.96,
-    )
-    zombie.attackCooldown = 0
-    zombie.walkPhase += Math.PI
-    this.player.grabTimer = Math.max(
-      this.player.grabTimer,
-      GAME.contact.grabDuration + 0.08,
-    )
-    this.shake = Math.max(this.shake, 5)
-    this.spawnSparks(zombie.x, zombie.z, COLORS.blood, 5)
-    this.events.push({ type: 'grab' })
-    this.damagePlayer(
-      Math.ceil(zombie.damage * GAME.contact.grabDamageMultiplier),
-    )
-  }
-
-  private breakGrabs(): void {
-    let broken = false
-    for (const zombie of this.zombies) {
-      if (zombie.state !== 'grabbing') continue
-      zombie.state = 'walking'
-      zombie.z = GAME.contact.breakKnockbackDepth + randomBetween(0, 0.6)
-      zombie.attackCooldown = GAME.contact.breakCooldown
-      zombie.hitFlash = 0.08
-      this.spawnDust(zombie.x, zombie.z)
-      broken = true
-    }
-
-    if (!broken) return
-    this.player.grabTimer = 0
-    this.shake = Math.max(this.shake, 4)
+  private breachZombie(zombie: Zombie): void {
+    zombie.hp = 0
+    zombie.state = 'walking'
+    const damage = Math.max(8, zombie.damage * 3)
+    this.player.hp = Math.max(0, this.player.hp - damage)
+    this.hurtFlash = 0.85
+    this.shake = Math.max(this.shake, 11)
+    this.combo = 0
+    this.comboTimer = 0
+    this.spawnSparks(zombie.x, zombie.z, COLORS.blood, 18)
+    this.spawnGore(zombie.x, zombie.z, 10)
     this.texts.push({
-      x: this.player.x,
-      z: 1.6,
-      y: 1.7,
-      text: 'BREAK FREE',
-      life: 0.55,
-      maxLife: 0.55,
-      color: COLORS.cyan,
+      x: zombie.x,
+      z: zombie.z,
+      y: 2.2,
+      text: `BREACH -${Math.round(damage)}`,
+      life: 0.8,
+      maxLife: 0.8,
+      color: COLORS.blood,
     })
+    this.events.push({ type: 'hurt' })
+
+    if (this.player.hp <= 0) this.triggerOverrun()
   }
 
   private updatePlayer(dt: number, controls: Controls): void {
@@ -405,45 +469,56 @@ export class GameWorld {
     player.dashCooldown = Math.max(0, player.dashCooldown - dt)
     player.grabTimer = Math.max(0, player.grabTimer - dt)
     player.overdriveTimer = Math.max(0, player.overdriveTimer - dt)
+    player.bulletMultiplierTimer = Math.max(
+      0,
+      player.bulletMultiplierTimer - dt,
+    )
+    if (player.bulletMultiplierTimer <= 0) player.bulletMultiplier = 1
 
-    let axis = controls.moveAxis
-    if (axis === 0 && controls.pointerX !== null) {
-      const delta = controls.pointerX - player.x
-      if (Math.abs(delta) > 0.012) {
-        axis = clamp(delta * 6, -1, 1)
-      }
+    if (controls.targetLane !== null) {
+      player.lane = controls.targetLane
     }
 
-    if (controls.dashPressed && player.dashCooldown <= 0) {
-      if (player.grabTimer > 0) this.breakGrabs()
-      const direction: 1 | -1 =
-        axis !== 0
-          ? (Math.sign(axis) as 1 | -1)
-          : controls.pointerX !== null &&
-              Math.abs(controls.pointerX - player.x) > 0.04
-            ? (Math.sign(controls.pointerX - player.x) as 1 | -1)
-            : player.facing
-      player.dashDirection = direction
-      player.dashTimer = GAME.player.dashDuration
-      player.dashCooldown = GAME.player.dashCooldown
-      player.invulnerability = Math.max(
-        player.invulnerability,
-        GAME.player.dashDuration + 0.08,
+    let axis = 0
+    if (controls.laneShift !== 0) {
+      const nextLane = clamp(
+        player.lane + Math.sign(controls.laneShift),
+        0,
+        2,
+      ) as LaneIndex
+      axis =
+        Math.sign(LANE_X[nextLane] - player.x) ||
+        Math.sign(controls.laneShift) ||
+        0
+      player.lane = nextLane
+    }
+
+    const laneX = LANE_X[player.lane]
+    if (
+      player.grabTimer > 0 &&
+      !this.zombies.some(
+        (zombie) => zombie.state === 'grabbing' && zombie.lane === player.lane,
       )
-      player.facing = direction
-      this.shake = Math.max(this.shake, 2.5)
-      this.events.push({ type: 'dash' })
+    ) {
+      player.grabTimer = 0
     }
 
-    if (player.dashTimer > 0) {
-      player.dashTimer = Math.max(0, player.dashTimer - dt)
-      player.x += player.dashDirection * GAME.player.dashSpeed * dt
-      this.spawnDashTrail()
-    } else {
-      const moveScale =
-        player.grabTimer > 0 ? GAME.contact.grabMoveSlow : 1
-      player.x += axis * GAME.player.speed * moveScale * dt
-      if (axis !== 0) player.facing = axis > 0 ? 1 : -1
+    if (axis === 0) {
+      axis =
+        Math.abs(laneX - player.x) > 0.012
+          ? (Math.sign(laneX - player.x) as 1 | -1)
+          : 0
+    }
+
+    const moveScale =
+      player.grabTimer > 0 ? GAME.contact.grabMoveSlow : 1
+    player.x = moveToward(
+      player.x,
+      laneX,
+      GAME.player.speed * moveScale * dt,
+    )
+    if (Math.abs(laneX - player.x) > 0.015) {
+      player.facing = laneX > player.x ? 1 : -1
     }
 
     player.x = clamp(player.x, -0.96, 0.96)
@@ -453,37 +528,39 @@ export class GameWorld {
     if (target && player.fireTimer <= 0) {
       this.fireAt(target)
       player.fireTimer =
-        GAME.player.fireInterval *
+        (GAME.player.fireInterval / player.weaponFireRate) *
         (player.overdriveTimer > 0 ? GAME.player.overdriveMultiplier : 1)
     }
   }
 
   private findTarget(): AimTarget | null {
-    let best: AimTarget | null = null
-    let bestScore = Number.POSITIVE_INFINITY
+    const lane = this.player.lane
+    let nearestZombie: Zombie | null = null
+    let nearestZombieDepth = Number.POSITIVE_INFINITY
+    let blockingBarrel: Barrel | null = null
+    let barrelDepth = Number.POSITIVE_INFINITY
 
     for (const zombie of this.zombies) {
-      if (zombie.hp <= 0) continue
-      const threat =
-        zombie.z + Math.abs(zombie.x - this.player.x) * 3.2
-      if (threat < bestScore) {
-        bestScore = threat
-        best = { kind: 'zombie', zombie }
+      if (zombie.hp <= 0 || zombie.lane !== lane) continue
+      if (zombie.z < nearestZombieDepth) {
+        nearestZombieDepth = zombie.z
+        nearestZombie = zombie
       }
     }
 
     for (const barrel of this.barrels) {
-      if (barrel.hp <= 0) continue
-      const alignment = Math.abs(barrel.x - this.player.x)
-      if (alignment > GAME.world.barrelMaxAlignment) continue
-      const threat = barrel.z + alignment * 1.6 - 1.8
-      if (threat < bestScore) {
-        bestScore = threat
-        best = { kind: 'barrel', barrel }
+      if (barrel.hp <= 0 || barrel.lane !== lane) continue
+      if (barrel.z < barrelDepth) {
+        barrelDepth = barrel.z
+        blockingBarrel = barrel
       }
     }
 
-    return best
+    if (blockingBarrel && barrelDepth < nearestZombieDepth) {
+      return { kind: 'barrel', barrel: blockingBarrel }
+    }
+
+    return nearestZombie ? { kind: 'zombie', zombie: nearestZombie } : null
   }
 
   private fireAt(target: AimTarget): void {
@@ -495,66 +572,126 @@ export class GameWorld {
   }
 
   private fireAtZombie(zombie: Zombie): void {
-    const crit = Math.random() < GAME.player.critChance
-    const damage =
-      GAME.player.damage * (crit ? GAME.player.critMultiplier : 1)
-
-    zombie.hp -= damage
-    zombie.hitFlash = 0.09
     this.player.muzzleFlash = 0.055
     this.shake = Math.max(this.shake, 0.7)
 
-    this.tracers.push({
-      targetX: zombie.x,
-      targetZ: zombie.z,
-      life: 0.12,
-      maxLife: 0.12,
-      crit,
-    })
-    this.spawnSparks(
-      zombie.x,
-      zombie.z,
-      crit ? COLORS.gold : '#fff1bd',
-      crit ? 8 : 4,
-    )
-    this.events.push({ type: 'shoot', crit })
-
-    if (zombie.hp <= 0) {
-      this.killZombie(zombie, crit)
-    } else {
-      this.events.push({ type: 'hit', crit })
+    const shots = clamp(this.player.bulletMultiplier, 1, 5)
+    for (let i = 0; i < shots; i += 1) {
+      const crit = Math.random() < GAME.player.critChance
+      const damage =
+        this.player.weaponDamage * (crit ? GAME.player.critMultiplier : 1)
+      this.tracers.push({
+        x: this.player.x + randomBetween(-0.04, 0.04),
+        z: 0.6,
+        targetX: zombie.x + randomBetween(-0.035, 0.035),
+        targetZ: zombie.z,
+        targetKind: 'zombie',
+        targetId: zombie.id,
+        damage,
+        speed: 45,
+        life: 1,
+        maxLife: 1,
+        crit,
+      })
     }
+    this.events.push({ type: 'shoot' })
   }
 
   private fireAtBarrel(barrel: Barrel): void {
-    const crit = Math.random() < GAME.player.critChance
-    const damage =
-      GAME.player.damage * (crit ? GAME.player.critMultiplier : 1)
-
-    barrel.hp -= damage
-    barrel.hitFlash = 0.09
     this.player.muzzleFlash = 0.055
     this.shake = Math.max(this.shake, 0.8)
 
-    this.tracers.push({
-      targetX: barrel.x,
-      targetZ: barrel.z,
-      life: 0.12,
-      maxLife: 0.12,
-      crit,
-    })
-    this.spawnSparks(
-      barrel.x,
-      barrel.z,
-      crit ? COLORS.gold : COLORS.orange,
-      crit ? 8 : 4,
-    )
-    this.events.push({ type: 'shoot', crit })
+    const shots = clamp(this.player.bulletMultiplier, 1, 5)
+    for (let i = 0; i < shots; i += 1) {
+      const crit = Math.random() < GAME.player.critChance
+      const damage =
+        this.player.weaponDamage * (crit ? GAME.player.critMultiplier : 1)
+      this.tracers.push({
+        x: this.player.x + randomBetween(-0.04, 0.04),
+        z: 0.6,
+        targetX: barrel.x + randomBetween(-0.05, 0.05),
+        targetZ: barrel.z,
+        targetKind: 'barrel',
+        targetId: barrel.id,
+        damage,
+        speed: 45,
+        life: 1,
+        maxLife: 1,
+        crit,
+      })
+    }
+    this.events.push({ type: 'shoot' })
+  }
 
-    if (barrel.hp <= 0) {
-      this.destroyBarrel(barrel, crit)
+  private updateProjectiles(dt: number): void {
+    for (const projectile of this.tracers) {
+      projectile.life -= dt
+      const target =
+        projectile.targetKind === 'zombie'
+          ? this.zombies.find(
+              (zombie) => zombie.id === projectile.targetId && zombie.hp > 0,
+            )
+          : this.barrels.find(
+              (barrel) => barrel.id === projectile.targetId && barrel.hp > 0,
+            )
+
+      if (target) {
+        projectile.targetX = target.x
+        projectile.targetZ = target.z
+      }
+
+      const dx = projectile.targetX - projectile.x
+      const dz = projectile.targetZ - projectile.z
+      const distance = Math.hypot(dx, dz)
+      const step = projectile.speed * dt
+
+      if (distance <= step || projectile.life <= 0) {
+        projectile.x = projectile.targetX
+        projectile.z = projectile.targetZ
+        if (target) this.applyProjectileHit(projectile, target)
+        continue
+      }
+
+      projectile.x += (dx / distance) * step
+      projectile.z += (dz / distance) * step
+    }
+
+    this.tracers = this.tracers.filter((projectile) => projectile.life > 0)
+  }
+
+  private applyProjectileHit(
+    projectile: (typeof this.tracers)[number],
+    target: Zombie | Barrel,
+  ): void {
+    if ('variant' in target) {
+      target.hp -= projectile.damage
+      target.hitFlash = 0.09
+      this.spawnSparks(
+        target.x,
+        target.z,
+        projectile.crit ? COLORS.gold : '#fff1bd',
+        projectile.crit ? 8 : 4,
+      )
+      if (target.hp <= 0) {
+        this.killZombie(target as Zombie, projectile.crit)
+      } else {
+        this.events.push({ type: 'hit', crit: projectile.crit })
+      }
+      return
+    }
+
+    target.hp -= projectile.damage
+    target.hitFlash = 0.09
+    this.spawnSparks(
+      target.x,
+      target.z,
+      projectile.crit ? COLORS.gold : COLORS.orange,
+      projectile.crit ? 8 : 4,
+    )
+    if (target.hp <= 0) {
+      this.destroyBarrel(target as Barrel, projectile.crit)
     } else {
-      this.events.push({ type: 'hit', crit })
+      this.events.push({ type: 'hit', crit: projectile.crit })
     }
   }
 
@@ -568,7 +705,7 @@ export class GameWorld {
       GAME.barrel.blastDamage +
       Math.max(0, this.wave - 1) * GAME.barrel.blastDamagePerWave
     for (const zombie of this.zombies) {
-      if (zombie.hp <= 0) continue
+      if (zombie.hp <= 0 || zombie.lane !== barrel.lane) continue
       if (
         Math.abs(zombie.x - barrel.x) <= GAME.barrel.blastRadiusX &&
         Math.abs(zombie.z - barrel.z) <= GAME.barrel.blastRadiusZ
@@ -588,57 +725,57 @@ export class GameWorld {
       maxLife: 0.75,
       color: COLORS.gold,
     })
-    this.applyBarrelReward(barrel)
+    this.applyBarrelMultiplier(barrel)
     this.events.push({ type: 'barrel' })
   }
 
-  private applyBarrelReward(barrel: Barrel): void {
-    if (barrel.reward === 'medkit') {
-      const before = this.player.hp
+  private applyBarrelMultiplier(barrel: Barrel): void {
+    let label = `BULLET ×${barrel.multiplier}`
+
+    if (barrel.kind === 'soldiers') {
+      this.player.squadCount = clamp(
+        this.player.squadCount + barrel.value,
+        1,
+        GAME.player.squadMax,
+      )
+      label = `SQUAD +${barrel.value}`
+    } else if (barrel.kind === 'minus') {
+      this.player.squadCount = clamp(
+        this.player.squadCount - barrel.value,
+        1,
+        GAME.player.squadMax,
+      )
+      label = `SQUAD -${barrel.value}`
+    } else if (barrel.kind === 'weapon') {
+      this.player.weaponLevel += 1
+      this.player.weaponDamage = GAME.player.damage + (this.player.weaponLevel - 1) * 5
+      this.player.weaponFireRate = 1 + (this.player.weaponLevel - 1) * 0.12
+      label = 'GUN +1'
+    } else if (barrel.kind === 'heal') {
       this.player.hp = Math.min(
         GAME.player.maxHp,
-        this.player.hp + GAME.barrel.heal,
+        this.player.hp + barrel.value,
       )
-      const healed = Math.round(this.player.hp - before)
-      this.texts.push({
-        x: barrel.x,
-        z: barrel.z,
-        y: 2.75,
-        text: healed > 0 ? `MEDKIT +${healed}` : 'MEDKIT',
-        life: 0.8,
-        maxLife: 0.8,
-        color: COLORS.lime,
-      })
-      return
+      label = `HEAL +${barrel.value}`
+    } else {
+      this.player.bulletMultiplier = Math.max(
+        this.player.bulletMultiplier,
+        barrel.multiplier,
+      )
+      this.player.bulletMultiplierTimer = Math.max(
+        this.player.bulletMultiplierTimer,
+        GAME.barrel.multiplierDuration,
+      )
     }
 
-    if (barrel.reward === 'overdrive') {
-      this.player.overdriveTimer = Math.max(
-        this.player.overdriveTimer,
-        GAME.barrel.overdriveDuration,
-      )
-      this.texts.push({
-        x: barrel.x,
-        z: barrel.z,
-        y: 2.75,
-        text: 'OVERDRIVE',
-        life: 0.8,
-        maxLife: 0.8,
-        color: COLORS.cyan,
-      })
-      return
-    }
-
-    const bonus = Math.round(GAME.barrel.scoreBonus * this.multiplier)
-    this.score += bonus
     this.texts.push({
       x: barrel.x,
       z: barrel.z,
       y: 2.75,
-      text: `+${bonus}`,
-      life: 0.8,
-      maxLife: 0.8,
-      color: COLORS.gold,
+      text: label,
+      life: 0.85,
+      maxLife: 0.85,
+      color: '#ffffff',
     })
   }
 
@@ -648,41 +785,47 @@ export class GameWorld {
       1 + Math.ceil(this.wave / 2),
     )
     const spawnCount = Math.max(0, desired - this.barrels.length)
-    const lanes = [0, -0.58, 0.58]
-    const occupied = new Set<number>()
+    const lanes: LaneIndex[] = [1, 0, 2]
+    const occupied = new Set<LaneIndex>()
 
     for (const barrel of this.barrels) {
-      if (Math.abs(barrel.x) < 0.22) occupied.add(0)
-      else occupied.add(barrel.x < 0 ? -0.58 : 0.58)
+      occupied.add(barrel.lane)
     }
 
     const available = lanes.filter((lane) => !occupied.has(lane))
     for (let i = 0; i < spawnCount; i += 1) {
       const lane = available[i] ?? lanes[i % lanes.length]
       const depth =
-        lane === 0
-          ? randomBetween(9.5, 12)
-          : randomBetween(7.5, 10)
-      this.spawnBarrel(lane + randomBetween(-0.06, 0.06), depth)
+        lane === 1 ? randomBetween(9.5, 12) : randomBetween(7.5, 10)
+      this.spawnBarrel(lane, depth)
     }
   }
 
-  private spawnBarrel(x: number, z: number): void {
+  private spawnBarrel(lane: LaneIndex, z: number): void {
     const hp = Math.round(
       (GAME.barrel.baseHp + Math.max(0, this.wave - 1) * GAME.barrel.hpPerWave) *
         randomBetween(0.9, 1.1),
     )
+    const multiplier = randomInt(
+      GAME.barrel.multiplierMin,
+      GAME.barrel.multiplierMax,
+    )
     const roll = Math.random()
-    const reward: BarrelReward =
-      roll < 0.38 ? 'medkit' : roll < 0.68 ? 'overdrive' : 'score'
+    const kind: GateKind =
+      roll < 0.42 ? 'weapon' : roll < 0.72 ? 'heal' : 'multiplier'
+    const value = kind === 'heal' ? 18 : 1
 
+    const x = LANE_X[lane]
     this.barrels.push({
       id: this.nextBarrelId++,
-      x: clamp(x, -0.88, 0.88),
+      x,
+      lane,
       z,
       hp,
       maxHp: hp,
-      reward,
+      multiplier,
+      kind,
+      value,
       seed: Math.random() * 1000,
       hitFlash: 0,
     })
@@ -710,24 +853,12 @@ export class GameWorld {
     this.events.push({ type: 'kill', crit })
   }
 
-  private damagePlayer(amount: number): void {
-    if (this.player.invulnerability > 0 || this.status !== 'playing') return
-
-    this.player.hp = Math.max(0, this.player.hp - amount)
-    this.player.invulnerability = GAME.player.hurtInvulnerability
-    this.hurtFlash = 0.55
-    this.shake = Math.max(this.shake, 8)
-    this.combo = 0
-    this.comboTimer = 0
-    this.events.push({ type: 'hurt' })
-
-    if (this.player.hp <= 0) this.triggerOverrun()
-  }
-
   private triggerOverrun(): void {
     this.player.hp = 0
     this.player.grabTimer = 0
     this.player.overdriveTimer = 0
+    this.player.bulletMultiplier = 1
+    this.player.bulletMultiplierTimer = 0
     this.player.muzzleFlash = 0
     this.status = 'overrun'
     this.overrunTimer = GAME.contact.overrunDuration
@@ -805,9 +936,6 @@ export class GameWorld {
     }
     this.particles = this.particles.filter((particle) => particle.life > 0)
 
-    for (const tracer of this.tracers) tracer.life -= dt
-    this.tracers = this.tracers.filter((tracer) => tracer.life > 0)
-
     for (const text of this.texts) {
       text.life -= dt
       text.y += dt * 1.1
@@ -857,24 +985,6 @@ export class GameWorld {
         kind: 'dust',
       })
     }
-    this.trimParticles()
-  }
-
-  private spawnDashTrail(): void {
-    if (Math.random() > 0.7) return
-    this.particles.push({
-      x: this.player.x + randomBetween(-0.06, 0.06),
-      z: 0.3,
-      y: randomBetween(0.2, 1.1),
-      vx: randomBetween(-0.25, 0.25),
-      vz: randomBetween(-0.3, 0.3),
-      vy: randomBetween(-0.1, 0.35),
-      life: 0.28,
-      maxLife: 0.28,
-      size: randomBetween(3, 7),
-      color: COLORS.cyan,
-      kind: 'dash',
-    })
     this.trimParticles()
   }
 

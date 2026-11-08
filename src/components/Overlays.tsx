@@ -47,14 +47,14 @@ export function StartScreen({
           <span>DEAD</span>
           <span>LANE</span>
         </h1>
-        <p className="game-tagline">One lane. Zero mercy.</p>
+        <p className="game-tagline">Three lanes. Zero mercy.</p>
       </div>
 
       <div className="start-bottom">
         <p className="start-brief">
-          The city is gone. The bridge is the only way out.
+          Shoot gates to upgrade your gun.
           <br />
-          Line up on supply caches. Dash out of a grab before it drains you.
+          Red zombies change lanes. Do not let them cross the red HOME LINE.
         </p>
 
         <button type="button" className="button button--primary" onClick={onStart}>
@@ -69,7 +69,7 @@ export function StartScreen({
               <kbd>D</kbd>
               <span className="control-strip__or">/ DRAG</span>
             </div>
-            <small>MOVE</small>
+            <small>SWITCH LANE</small>
           </div>
           <div className="control-strip__item">
             <CrosshairIcon size={22} />
@@ -87,7 +87,7 @@ export function StartScreen({
           <span>
             BEST RUN <strong>{formatScore(best)}</strong>
           </span>
-          <span className="start-meta__build">v0.2 · CONTACT PROTOCOL</span>
+          <span className="start-meta__build">v0.3 · THREE-LANE</span>
         </div>
       </div>
     </section>
